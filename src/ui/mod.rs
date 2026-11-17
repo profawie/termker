@@ -1,6 +1,7 @@
 //! Pages and shared UI components.
 
 pub mod about;
+pub mod forwards;
 pub mod hosts;
 pub mod placeholder;
 pub mod session;
