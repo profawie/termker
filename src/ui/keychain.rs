@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::{
     app::App,
+    fido::{self, SkKind},
     keychain::{self, CertificateInfo, CertificateStatus, KeyError, KeyKind},
     model::{Identity, KeyEntry},
     theme::Theme,
@@ -28,6 +29,7 @@ pub struct KeychainPage {
 enum Panel {
     Generate(GenerateForm),
     Import(ImportForm),
+    SecurityKey(SecurityKeyForm),
     Key(KeyForm),
     Identity(IdentityForm),
 }
@@ -40,6 +42,15 @@ struct GenerateForm {
     error: Option<String>,
     /// Set while the key is being generated in the background.
     working: Option<Receiver<Result<KeyEntry, KeyError>>>,
+}
+
+struct SecurityKeyForm {
+    name: String,
+    kind: SkKind,
+    pin: String,
+    error: Option<String>,
+    /// Set while waiting for the security key to be touched.
+    working: Option<Receiver<Result<KeyEntry, String>>>,
 }
 
 #[derive(Default)]
@@ -109,6 +120,15 @@ impl KeychainPage {
                 }
                 if ui.button("Import key").clicked() {
                     self.panel = Some(Panel::Import(ImportForm::default()));
+                }
+                if ui.button("Add security key").clicked() {
+                    self.panel = Some(Panel::SecurityKey(SecurityKeyForm {
+                        name: String::new(),
+                        kind: SkKind::Ed25519,
+                        pin: String::new(),
+                        error: None,
+                        working: None,
+                    }));
                 }
                 if ui.button("New identity").clicked() {
                     self.panel = Some(Panel::Identity(IdentityForm {
@@ -247,6 +267,7 @@ impl KeychainPage {
                     next = match panel {
                         Panel::Generate(form) => generate_form(ui, app, form),
                         Panel::Import(form) => import_form(ui, app, form),
+                        Panel::SecurityKey(form) => security_key_form(ui, app, form),
                         Panel::Key(form) => key_form(ui, app, form),
                         Panel::Identity(form) => identity_form(ui, app, form),
                     };
@@ -325,14 +346,9 @@ fn key_card(ui: &mut egui::Ui, theme: &Theme, key: &KeyEntry, selected: bool) ->
         ui.set_width(CARD_INNER_WIDTH);
         ui.vertical(|ui| {
             ui.add(egui::Label::new(RichText::new(&key.name).size(15.0).strong()).truncate());
-            let protection = if key.encrypted {
-                "passphrase protected"
-            } else {
-                "no passphrase"
-            };
             ui.add(
                 egui::Label::new(
-                    RichText::new(format!("{}  ·  {protection}", key.algorithm))
+                    RichText::new(format!("{}  ·  {}", key.algorithm, key.protection()))
                         .small()
                         .color(theme.text_dim),
                 )
@@ -503,6 +519,110 @@ fn generate_form(ui: &mut egui::Ui, app: &mut App, form: &mut GenerateForm) -> N
     next
 }
 
+fn security_key_form(ui: &mut egui::Ui, app: &mut App, form: &mut SecurityKeyForm) -> Next {
+    let theme = app.theme;
+    ui.label(RichText::new("Add security key").size(18.0).strong());
+    ui.add_space(8.0);
+
+    if let Some(result) = form.working.as_ref().and_then(|rx| rx.try_recv().ok()) {
+        form.working = None;
+        match result {
+            Ok(entry) => {
+                let id = entry.id;
+                app.data.keys.push(entry);
+                app.save();
+                return Next::OpenKey(id);
+            }
+            Err(error) => form.error = Some(error),
+        }
+    }
+    let working = form.working.is_some();
+
+    dim(
+        ui,
+        &theme,
+        "Creates an SSH key on a FIDO2 security key such as a YubiKey. The private key \
+         cannot be copied off the security key, and every sign-in needs a touch.",
+    );
+    ui.add_space(4.0);
+    ui.add_enabled_ui(!working, |ui| {
+        super::field(ui, "Name", &mut form.name, "e.g. YubiKey 5C");
+        ui.label(RichText::new("Type").small().color(theme.text_dim));
+        egui::ComboBox::from_id_salt("security_key_kind")
+            .selected_text(form.kind.title())
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                for kind in SkKind::ALL {
+                    ui.selectable_value(&mut form.kind, kind, kind.title());
+                }
+            });
+        dim(ui, &theme, form.kind.hint());
+        ui.add_space(4.0);
+        secret_field(
+            ui,
+            &theme,
+            "Security key PIN (if it has one)",
+            &mut form.pin,
+        );
+        dim(
+            ui,
+            &theme,
+            "The PIN is sent to the security key and is never saved.",
+        );
+    });
+
+    if let Some(error) = &form.error {
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(RichText::new(error).color(theme.danger)).wrap());
+    }
+    ui.add_space(12.0);
+    let mut next = Next::Stay;
+    ui.horizontal(|ui| {
+        if working {
+            ui.spinner();
+            ui.label(RichText::new("Touch your security key now").strong());
+        } else if ui
+            .add(super::primary_button(&theme, "Create key"))
+            .clicked()
+        {
+            if form.name.trim().is_empty() {
+                form.error = Some("Name is required.".to_string());
+            } else {
+                form.error = None;
+                let (tx, rx) = mpsc::channel();
+                let store = app.key_store.clone();
+                let (kind, name) = (form.kind, form.name.clone());
+                let pin = std::mem::take(&mut form.pin);
+                let ctx = ui.ctx().clone();
+                // Waiting for the touch blocks, so it runs on its own thread.
+                std::thread::spawn(move || {
+                    let pin = (!pin.is_empty()).then_some(pin);
+                    let result = fido::platform()
+                        .make_credential(kind, fido::APPLICATION, name.trim(), pin.as_deref())
+                        .map_err(|err| match err {
+                            fido::FidoError::PinRequired => {
+                                "This security key needs its PIN. Enter it and try again."
+                                    .to_string()
+                            }
+                            other => other.to_string(),
+                        })
+                        .and_then(|credential| {
+                            keychain::add_security_key(&store, &credential, &name)
+                                .map_err(|err| err.to_string())
+                        });
+                    let _ = tx.send(result);
+                    ctx.request_repaint();
+                });
+                form.working = Some(rx);
+            }
+        }
+        if !working && ui.button("Cancel").clicked() {
+            next = Next::Close;
+        }
+    });
+    next
+}
+
 fn import_form(ui: &mut egui::Ui, app: &mut App, form: &mut ImportForm) -> Next {
     let theme = app.theme;
     ui.label(RichText::new("Import key").size(18.0).strong());
@@ -598,15 +718,7 @@ fn key_form(ui: &mut egui::Ui, app: &mut App, form: &mut KeyForm) -> Next {
     dim(
         ui,
         &theme,
-        format!(
-            "{}  ·  {}",
-            key.algorithm,
-            if key.encrypted {
-                "passphrase protected"
-            } else {
-                "no passphrase"
-            }
-        ),
+        format!("{}  ·  {}", key.algorithm, key.protection()),
     );
     ui.add_space(6.0);
 
@@ -656,7 +768,14 @@ fn key_form(ui: &mut egui::Ui, app: &mut App, form: &mut KeyForm) -> Next {
             }
         }
     });
-    if !key.encrypted {
+    if key.is_security_key() {
+        dim(
+            ui,
+            &theme,
+            "The private key stays on the security key. The file kept here, and an exported \
+             copy, is only a handle that works together with that security key.",
+        );
+    } else if !key.encrypted {
         dim(
             ui,
             &theme,

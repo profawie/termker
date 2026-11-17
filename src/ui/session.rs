@@ -231,6 +231,18 @@ pub fn prompt_card(
                     }
                 }
             }
+            Some(Prompt::Pin { key, retry, reply }) => {
+                let title = format!("PIN for security key {key}");
+                let error = retry.then_some(
+                    "That PIN was not accepted. Several wrong PINs in a row lock the security key.",
+                );
+                match secret_form(ui, theme, &title, error, false, secret_input) {
+                    Some(answer) => {
+                        let _ = reply.send(answer.map(|secret| secret.value));
+                    }
+                    None => keep = Some(Prompt::Pin { key, retry, reply }),
+                }
+            }
             None => {}
         }
     });

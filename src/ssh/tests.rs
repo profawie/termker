@@ -60,6 +60,24 @@ impl server::Handler for TestServer {
         })
     }
 
+    /// Like OpenSSH, only ask for a signature from a key that could be
+    /// accepted.
+    async fn auth_publickey_offered(
+        &mut self,
+        _user: &str,
+        offer: server::PublicKeyOffer<'_>,
+    ) -> Result<Auth, Self::Error> {
+        let known = self
+            .authorized_key
+            .as_ref()
+            .is_some_and(|known| known.key_data() == offer.public_key.key_data());
+        Ok(if known || self.trusted_ca.is_some() {
+            Auth::Accept
+        } else {
+            Auth::reject()
+        })
+    }
+
     async fn auth_publickey(
         &mut self,
         _user: &str,
@@ -275,6 +293,9 @@ pub(crate) struct Answers {
     pub(crate) accept_host_key: bool,
     passwords: Arc<Mutex<Vec<&'static str>>>,
     passphrase: Option<&'static str>,
+    pub(crate) pin: Option<&'static str>,
+    /// Stands in for the security key, when set.
+    pub(crate) security_key: Option<Arc<dyn crate::fido::Authenticator>>,
     /// Tick "remember" on every password and passphrase answer.
     remember: bool,
     secrets: SecretStore,
@@ -287,6 +308,8 @@ impl Answers {
             accept_host_key,
             passwords: Arc::new(Mutex::new(passwords.iter().rev().copied().collect())),
             passphrase: None,
+            pin: None,
+            security_key: None,
             remember: false,
             secrets: SecretStore::disabled(),
             asked: Arc::default(),
@@ -299,7 +322,11 @@ impl Answers {
 
     pub(crate) fn prompter(&self) -> Prompter {
         let this = self.clone();
-        Prompter::new(move |prompt| this.answer(prompt), self.secrets.clone())
+        let prompter = Prompter::new(move |prompt| this.answer(prompt), self.secrets.clone());
+        match &self.security_key {
+            Some(key) => prompter.with_authenticator(key.clone()),
+            None => prompter,
+        }
     }
 
     fn secret(&self, value: &str) -> Secret {
@@ -324,6 +351,10 @@ impl Answers {
                 asked.push(format!("password:{hop}:retry={retry}"));
                 let next = self.passwords.lock().unwrap().pop();
                 let _ = reply.send(next.map(|value| self.secret(value)));
+            }
+            Prompt::Pin { retry, reply, .. } => {
+                asked.push(format!("pin:retry={retry}"));
+                let _ = reply.send(self.pin.map(str::to_string));
             }
             Prompt::Passphrase { retry, reply, .. } => {
                 asked.push(format!("passphrase:retry={retry}"));
@@ -724,6 +755,188 @@ async fn remembered_passphrase_unlocks_the_key_without_a_prompt() {
         .unwrap();
     connection.close().await;
     assert_eq!(answers.asked(), Vec::<String>::new());
+}
+
+/// A key file for a new credential on `device`, and a hop that uses it.
+fn security_key_hop(
+    device: &crate::fido::tests::SoftwareKey,
+    kind: crate::fido::SkKind,
+    pin: Option<&str>,
+    name: &str,
+) -> (PrivateKey, std::path::PathBuf) {
+    use crate::fido::{APPLICATION, Authenticator};
+    let credential = device
+        .make_credential(kind, APPLICATION, "tester", pin)
+        .unwrap();
+    let key = crate::fido::private_key(&credential, APPLICATION, "token").unwrap();
+    let path = temp_dir(name).join("id_sk");
+    std::fs::write(
+        &path,
+        key.to_openssh(Default::default()).unwrap().as_bytes(),
+    )
+    .unwrap();
+    (key, path)
+}
+
+fn key_hop(path: &std::path::Path, port: u16) -> Hop {
+    Hop {
+        auth: HopAuth::Key {
+            path: path.display().to_string(),
+            name: "token".to_string(),
+            certificate: None,
+        },
+        ..hop("a", port)
+    }
+}
+
+#[tokio::test]
+async fn security_key_signs_in_with_both_key_types() {
+    use crate::fido::{SkKind, tests::SoftwareKey};
+    for kind in SkKind::ALL {
+        let device = Arc::new(SoftwareKey::default());
+        let (key, path) = security_key_hop(&device, kind, None, "sk-login");
+        let server = TestServer {
+            authorized_key: Some(key.public_key().clone()),
+            ..Default::default()
+        };
+        let logins = server.logins.clone();
+        let port = start(server).await;
+
+        let mut answers = Answers::new(true, &[]);
+        answers.security_key = Some(device.clone());
+        let statuses = Arc::new(Mutex::new(Vec::new()));
+        let record = {
+            let statuses = statuses.clone();
+            move |text: String| statuses.lock().unwrap().push(text)
+        };
+        let connection = connect(
+            &[key_hop(&path, port)],
+            &known_hosts("sk-login"),
+            &answers.prompter(),
+            &record,
+        )
+        .await
+        .unwrap();
+        connection.close().await;
+        assert_eq!(*logins.lock().unwrap(), ["key:tester"]);
+        assert!(
+            statuses
+                .lock()
+                .unwrap()
+                .contains(&"Touch your security key to sign in to a".to_string())
+        );
+    }
+}
+
+#[tokio::test]
+async fn security_key_is_not_touched_when_the_server_does_not_know_it() {
+    use crate::fido::{SkKind, tests::SoftwareKey};
+    let device = Arc::new(SoftwareKey {
+        refuse_touch: true,
+        ..Default::default()
+    });
+    // `refuse_touch` only applies to signing here, so make the credential
+    // on a second device that shares nothing with the server.
+    let other = SoftwareKey::default();
+    let (_, path) = security_key_hop(&other, SkKind::Ed25519, None, "sk-unknown");
+    let port = start(TestServer::default()).await;
+
+    let mut answers = Answers::new(true, &[]);
+    answers.security_key = Some(device);
+    let result = connect(
+        &[key_hop(&path, port)],
+        &known_hosts("sk-unknown"),
+        &answers.prompter(),
+        &quiet,
+    )
+    .await;
+    // The server said no before any signature was asked for.
+    assert!(matches!(result, Err(SshError::AuthFailed { .. })));
+}
+
+#[tokio::test]
+async fn security_key_pin_is_asked_for_and_wrong_pins_are_limited() {
+    use crate::fido::{FidoError, SkKind, tests::SoftwareKey};
+    let device = Arc::new(SoftwareKey {
+        pin: Some("1234"),
+        ..Default::default()
+    });
+    let (key, path) = security_key_hop(&device, SkKind::Ed25519, Some("1234"), "sk-pin");
+    let port = start(TestServer {
+        authorized_key: Some(key.public_key().clone()),
+        ..Default::default()
+    })
+    .await;
+    let known = known_hosts("sk-pin");
+    let hops = [key_hop(&path, port)];
+
+    let mut answers = Answers::new(true, &[]);
+    answers.security_key = Some(device.clone());
+    answers.pin = Some("1234");
+    let connection = connect(&hops, &known, &answers.prompter(), &quiet)
+        .await
+        .unwrap();
+    connection.close().await;
+    assert_eq!(answers.asked(), ["hostkey:a:Unknown", "pin:retry=false"]);
+
+    let mut answers = Answers::new(true, &[]);
+    answers.security_key = Some(device.clone());
+    answers.pin = Some("0000");
+    let result = connect(&hops, &known, &answers.prompter(), &quiet).await;
+    assert!(matches!(
+        result,
+        Err(SshError::SecurityKey {
+            error: FidoError::PinInvalid,
+            ..
+        })
+    ));
+    assert_eq!(
+        answers.asked(),
+        ["pin:retry=false", "pin:retry=true", "pin:retry=true"]
+    );
+
+    // Cancelling the PIN prompt cancels the connection.
+    let mut answers = Answers::new(true, &[]);
+    answers.security_key = Some(device);
+    let result = connect(&hops, &known, &answers.prompter(), &quiet).await;
+    assert!(matches!(result, Err(SshError::Cancelled)));
+}
+
+#[tokio::test]
+async fn untouched_security_key_fails_and_the_connection_can_fall_back() {
+    use crate::fido::{FidoError, SkKind, tests::SoftwareKey};
+    let maker = SoftwareKey::default();
+    let (key, path) = security_key_hop(&maker, SkKind::Ed25519, None, "sk-timeout");
+    let port = start(TestServer {
+        authorized_key: Some(key.public_key().clone()),
+        ..Default::default()
+    })
+    .await;
+    let mut answers = Answers::new(true, &[]);
+    answers.security_key = Some(Arc::new(SoftwareKey {
+        refuse_touch: true,
+        ..Default::default()
+    }));
+    let result = connect(
+        &[key_hop(&path, port)],
+        &known_hosts("sk-timeout"),
+        &answers.prompter(),
+        &quiet,
+    )
+    .await;
+    match result {
+        Err(err @ SshError::SecurityKey { .. }) => {
+            assert!(matches!(
+                err,
+                SshError::SecurityKey {
+                    error: FidoError::NotConfirmed,
+                    ..
+                }
+            ));
+            assert!(err.to_string().starts_with("Security key token: "));
+        }
+        other => panic!("unexpected result: {:?}", other.is_ok()),
+    }
 }
 
 #[test]

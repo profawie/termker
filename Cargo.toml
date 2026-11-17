@@ -21,6 +21,11 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "time", "io-util", "fs"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
+# Security keys over USB. On Windows, direct USB access to a security key
+# needs administrator rights, so this backend is not used there.
+[target.'cfg(not(windows))'.dependencies]
+ctap-hid-fido2 = "3.6"
+
 [profile.release]
 lto = "thin"
 strip = true

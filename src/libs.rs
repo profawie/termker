@@ -46,6 +46,12 @@ pub const LIBRARIES: &[LibraryInfo] = &[
         license: "MIT OR Apache-2.0",
     },
     LibraryInfo {
+        name: "ctap-hid-fido2",
+        purpose: "FIDO2 security keys over USB (CTAP2), on macOS",
+        website: "https://github.com/gebogebogebo/ctap-hid-fido2",
+        license: "MIT",
+    },
+    LibraryInfo {
         name: "keyring",
         purpose: "Saved passwords in the OS credential store (Windows Credential Manager, macOS Keychain)",
         website: "https://github.com/open-source-cooperative/keyring-rs",

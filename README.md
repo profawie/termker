@@ -17,7 +17,7 @@ Version: 0.1.0
 | SFTP: browse, upload, download, rename, delete, new folder | Done |
 | Keychain: generate and import keys (ED25519, ECDSA, RSA), identities, OpenSSH user certificates | Done |
 | Saved passwords and passphrases in the OS credential store (opt-in) | Done |
-| FIDO2 security keys | Planned |
+| FIDO2 security keys (`ed25519-sk`, `ecdsa-sk`): create, import, sign in | Done on macOS; Windows in progress |
 
 ## Build and run
 
@@ -51,6 +51,10 @@ Keys in the keychain are stored as one OpenSSH private key file each in a
 is encrypted on disk when you give it a passphrase; without one it is stored
 unencrypted, like a key in `~/.ssh`. Public keys and certificates are public
 material and are kept in `data.json`.
+
+A key on a FIDO2 security key never leaves it. The file kept for it holds
+only a key handle, in the same format `ssh-keygen -t ed25519-sk` writes, and
+is useless without the security key. Its PIN is never saved.
 
 Trusted host keys are kept in a `known_hosts` file in the same folder, in the
 OpenSSH format. Your own `~/.ssh/known_hosts` is never modified.

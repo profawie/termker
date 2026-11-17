@@ -16,6 +16,7 @@ use tokio::sync::{mpsc, oneshot};
 
 pub use crate::secrets::SecretStore;
 use crate::{
+    fido::{self, Authenticator, FidoError, SkKey},
     keychain::KeyStore,
     model::{AuthMethod, Data, Host},
     secrets,
@@ -113,6 +114,11 @@ pub enum SshError {
     Forward(String),
     /// An SFTP session could not be set up or was lost; the text says why.
     Sftp(String),
+    /// The security key could not sign in.
+    SecurityKey {
+        key: String,
+        error: FidoError,
+    },
     Cancelled,
 }
 
@@ -120,6 +126,7 @@ impl fmt::Display for SshError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Protocol(err) => write!(f, "SSH error: {err}"),
+            Self::SecurityKey { key, error } => write!(f, "Security key {key}: {error}"),
             Self::Io(err) => write!(f, "Network error: {err}"),
             Self::Timeout { hop } => write!(f, "Timed out connecting to {hop}."),
             Self::MissingUsername { hop } => {
@@ -141,6 +148,12 @@ impl std::error::Error for SshError {}
 impl From<russh::Error> for SshError {
     fn from(err: russh::Error) -> Self {
         Self::Protocol(err)
+    }
+}
+
+impl From<russh::SendError> for SshError {
+    fn from(_: russh::SendError) -> Self {
+        Self::Protocol(russh::Error::SendError)
     }
 }
 
@@ -175,6 +188,12 @@ pub enum Prompt {
         can_remember: bool,
         reply: oneshot::Sender<Option<Secret>>,
     },
+    /// PIN of a security key. It is never saved.
+    Pin {
+        key: String,
+        retry: bool,
+        reply: oneshot::Sender<Option<String>>,
+    },
 }
 
 /// A password or passphrase typed by the user.
@@ -189,6 +208,7 @@ pub struct Secret {
 pub struct Prompter {
     emit: Arc<dyn Fn(Prompt) + Send + Sync>,
     secrets: SecretStore,
+    authenticator: Arc<dyn Authenticator>,
 }
 
 impl Prompter {
@@ -196,7 +216,15 @@ impl Prompter {
         Self {
             emit: Arc::new(emit),
             secrets,
+            authenticator: fido::platform(),
         }
+    }
+
+    /// Use `authenticator` as the security key instead of the real one.
+    #[cfg(test)]
+    pub(crate) fn with_authenticator(mut self, authenticator: Arc<dyn Authenticator>) -> Self {
+        self.authenticator = authenticator;
+        self
     }
 
     /// The saved secret under `key`, if any. The credential store can block,
@@ -402,7 +430,7 @@ pub async fn connect_with(
             }
         };
         status(format!("Authenticating to {}", hop.name));
-        authenticate(&mut handle, hop, prompter).await?;
+        authenticate(&mut handle, hop, prompter, status).await?;
         handles.push(handle);
     }
     Ok(Connection { handles })
@@ -412,6 +440,7 @@ async fn authenticate(
     handle: &mut Handle<ClientHandler>,
     hop: &Hop,
     prompter: &Prompter,
+    status: &(dyn Fn(String) + Send + Sync),
 ) -> Result<(), SshError> {
     match &hop.auth {
         HopAuth::Password => {
@@ -461,6 +490,10 @@ async fn authenticate(
             certificate,
         } => {
             let key = Arc::new(load_key(path, name, prompter).await?);
+            if let Some(sk) = SkKey::from_private(&key) {
+                return authenticate_security_key(handle, hop, name, &key, sk, prompter, status)
+                    .await;
+            }
             if let Some(certificate) = certificate {
                 let certificate =
                     Certificate::from_openssh(certificate).map_err(|err| SshError::Key {
@@ -487,6 +520,122 @@ async fn authenticate(
     Err(SshError::AuthFailed {
         hop: hop.name.clone(),
     })
+}
+
+/// Sign in with a key that lives on a FIDO2 security key. The server is
+/// asked first whether it accepts the key, so the user is only told to
+/// touch the security key when a signature is really needed.
+async fn authenticate_security_key(
+    handle: &mut Handle<ClientHandler>,
+    hop: &Hop,
+    name: &str,
+    key: &russh::keys::PrivateKey,
+    sk: SkKey,
+    prompter: &Prompter,
+    status: &(dyn Fn(String) + Send + Sync),
+) -> Result<(), SshError> {
+    let security_key_error = |error| SshError::SecurityKey {
+        key: name.to_string(),
+        error,
+    };
+    let touch = || {
+        status(format!(
+            "Touch your security key to sign in to {}",
+            hop.name
+        ))
+    };
+    let mut pin: Option<String> = None;
+    let mut attempts = 0;
+    loop {
+        let mut signer = SecurityKeySigner {
+            sk: sk.clone(),
+            authenticator: prompter.authenticator.clone(),
+            pin: pin.clone(),
+            failure: None,
+            on_touch_needed: &touch,
+        };
+        let result = handle
+            .authenticate_publickey_with(
+                hop.username.clone(),
+                key.public_key().clone(),
+                None,
+                &mut signer,
+            )
+            .await;
+        let failure = signer.failure.take();
+        match (result, failure) {
+            (Ok(result), _) if result.success() => return Ok(()),
+            (Ok(_), _) => {
+                return Err(SshError::AuthFailed {
+                    hop: hop.name.clone(),
+                });
+            }
+            (Err(_), Some(error @ (FidoError::PinRequired | FidoError::PinInvalid)))
+                if !prompter.authenticator.has_own_dialogs() && attempts < MAX_SECRET_ATTEMPTS =>
+            {
+                // A security key locks itself after a few wrong PINs, so
+                // the number of tries is kept small.
+                attempts += 1;
+                let answer = prompter
+                    .ask(|reply| Prompt::Pin {
+                        key: name.to_string(),
+                        retry: error == FidoError::PinInvalid,
+                        reply,
+                    })
+                    .await
+                    .flatten()
+                    .ok_or(SshError::Cancelled)?;
+                pin = Some(answer);
+            }
+            (Err(_), Some(error)) => return Err(security_key_error(error)),
+            (Err(err), None) => return Err(err),
+        }
+    }
+}
+
+/// Signs the SSH authentication request with a security key.
+struct SecurityKeySigner<'a> {
+    sk: SkKey,
+    authenticator: Arc<dyn Authenticator>,
+    pin: Option<String>,
+    /// Why the security key did not sign, kept for the caller.
+    failure: Option<FidoError>,
+    on_touch_needed: &'a (dyn Fn() + Send + Sync),
+}
+
+impl russh::Signer for SecurityKeySigner<'_> {
+    type Error = SshError;
+
+    async fn auth_sign(
+        &mut self,
+        _key: &russh::keys::agent::AgentIdentity,
+        _hash_alg: Option<russh::keys::HashAlg>,
+        mut to_sign: Vec<u8>,
+    ) -> Result<Vec<u8>, Self::Error> {
+        (self.on_touch_needed)();
+        let (sk, authenticator, pin) = (
+            self.sk.clone(),
+            self.authenticator.clone(),
+            self.pin.clone(),
+        );
+        let message = to_sign.clone();
+        // Waiting for the touch blocks, so it runs off the async threads.
+        let signed = tokio::task::spawn_blocking(move || {
+            sk.sign(authenticator.as_ref(), &message, pin.as_deref())
+        })
+        .await
+        .unwrap_or_else(|err| Err(FidoError::Other(err.to_string())));
+        match signed {
+            Ok(signature) => {
+                to_sign.extend_from_slice(&signature);
+                Ok(to_sign)
+            }
+            Err(error) => {
+                self.failure = Some(error);
+                Err(SshError::Cancelled)
+            }
+        }
+    }
 }
 
 /// Load a private key, asking for a passphrase only if the key is encrypted.
