@@ -102,10 +102,121 @@ impl Default for Settings {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardKind {
+    /// Listen on this computer, connect out from the SSH host (`ssh -L`).
+    Local,
+    /// Listen on the SSH host, connect back to this computer (`ssh -R`).
+    Remote,
+    /// SOCKS5 proxy on this computer (`ssh -D`).
+    Dynamic,
+}
+
+impl ForwardKind {
+    pub const ALL: [ForwardKind; 3] = [Self::Local, Self::Remote, Self::Dynamic];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Local => "Local",
+            Self::Remote => "Remote",
+            Self::Dynamic => "Dynamic (SOCKS5)",
+        }
+    }
+}
+
+pub const LOOPBACK: &str = "127.0.0.1";
+
+/// A saved port forwarding rule through one of the hosts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Forward {
+    pub id: Uuid,
+    #[serde(default)]
+    pub label: String,
+    pub host_id: Uuid,
+    pub kind: ForwardKind,
+    #[serde(default = "default_bind_address")]
+    pub bind_address: String,
+    pub bind_port: u16,
+    /// Not used for dynamic forwards.
+    #[serde(default)]
+    pub dest_host: String,
+    #[serde(default)]
+    pub dest_port: u16,
+}
+
+fn default_bind_address() -> String {
+    LOOPBACK.to_string()
+}
+
+impl Forward {
+    pub fn new(host_id: Uuid) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            label: String::new(),
+            host_id,
+            kind: ForwardKind::Local,
+            bind_address: default_bind_address(),
+            bind_port: 0,
+            dest_host: String::new(),
+            dest_port: 0,
+        }
+    }
+
+    /// Whether the listening side accepts connections only from the machine
+    /// it listens on.
+    pub fn binds_loopback(&self) -> bool {
+        matches!(
+            self.bind_address.as_str(),
+            "127.0.0.1" | "localhost" | "::1"
+        )
+    }
+
+    /// One sentence saying what the rule does, with `host` as the SSH host's
+    /// name.
+    pub fn describe(&self, host: &str) -> String {
+        let bind = format!("{}:{}", self.bind_address, self.bind_port);
+        let dest = format!("{}:{}", self.dest_host, self.dest_port);
+        match self.kind {
+            ForwardKind::Local => {
+                format!("Connections to {bind} on this computer go through {host} to {dest}.")
+            }
+            ForwardKind::Remote => {
+                format!("Connections to {bind} on {host} come back to {dest} from this computer.")
+            }
+            ForwardKind::Dynamic => {
+                format!("SOCKS5 proxy on {bind}. Apps that use it reach the network from {host}.")
+            }
+        }
+    }
+
+    /// Short form, e.g. `127.0.0.1:8080 -> db:5432`.
+    pub fn summary(&self) -> String {
+        let bind = format!("{}:{}", self.bind_address, self.bind_port);
+        match self.kind {
+            ForwardKind::Local => format!("{bind} -> {}:{}", self.dest_host, self.dest_port),
+            ForwardKind::Remote => {
+                format!("{bind} (remote) -> {}:{}", self.dest_host, self.dest_port)
+            }
+            ForwardKind::Dynamic => format!("{bind} (SOCKS5)"),
+        }
+    }
+
+    pub fn display_name(&self) -> String {
+        if self.label.is_empty() {
+            self.summary()
+        } else {
+            self.label.clone()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Data {
     #[serde(default)]
     pub hosts: Vec<Host>,
+    #[serde(default)]
+    pub forwards: Vec<Forward>,
     #[serde(default)]
     pub settings: Settings,
 }
@@ -116,6 +227,9 @@ pub enum HostError {
     MissingKeyPath,
     InvalidPort,
     JumpLoop,
+    MissingHost,
+    MissingBindAddress,
+    MissingDestination,
 }
 
 impl std::fmt::Display for HostError {
@@ -125,6 +239,9 @@ impl std::fmt::Display for HostError {
             Self::MissingKeyPath => "Choose the private key file to use.",
             Self::InvalidPort => "Port must be a number from 1 to 65535.",
             Self::JumpLoop => "This jump host would create a loop.",
+            Self::MissingHost => "Choose the host to forward through.",
+            Self::MissingBindAddress => "Listen address is required.",
+            Self::MissingDestination => "Destination host and port are required.",
         })
     }
 }
@@ -184,9 +301,45 @@ impl Data {
         Ok(())
     }
 
-    /// Delete a host and clear jump host references to it.
+    /// Insert a new forward or update an existing one, after validation.
+    pub fn upsert_forward(&mut self, mut forward: Forward) -> Result<(), HostError> {
+        forward.label = forward.label.trim().to_string();
+        forward.bind_address = forward.bind_address.trim().to_string();
+        forward.dest_host = forward.dest_host.trim().to_string();
+        if self.host(forward.host_id).is_none() {
+            return Err(HostError::MissingHost);
+        }
+        if forward.bind_address.is_empty() {
+            return Err(HostError::MissingBindAddress);
+        }
+        if forward.bind_port == 0 {
+            return Err(HostError::InvalidPort);
+        }
+        if forward.kind == ForwardKind::Dynamic {
+            forward.dest_host.clear();
+            forward.dest_port = 0;
+        } else if forward.dest_host.is_empty() || forward.dest_port == 0 {
+            return Err(HostError::MissingDestination);
+        }
+        match self
+            .forwards
+            .iter_mut()
+            .find(|existing| existing.id == forward.id)
+        {
+            Some(existing) => *existing = forward,
+            None => self.forwards.push(forward),
+        }
+        Ok(())
+    }
+
+    pub fn remove_forward(&mut self, id: Uuid) {
+        self.forwards.retain(|forward| forward.id != id);
+    }
+
+    /// Delete a host, its forwards, and jump host references to it.
     pub fn remove_host(&mut self, id: Uuid) {
         self.hosts.retain(|host| host.id != id);
+        self.forwards.retain(|forward| forward.host_id != id);
         for host in &mut self.hosts {
             if host.jump_host == Some(id) {
                 host.jump_host = None;
@@ -297,12 +450,99 @@ mod tests {
         assert_eq!(data.hosts[0].jump_host, None);
     }
 
+    fn forward(data: &mut Data) -> Forward {
+        let h = host("fw");
+        data.upsert_host(h.clone()).unwrap();
+        Forward {
+            bind_port: 8080,
+            dest_host: "db.internal".into(),
+            dest_port: 5432,
+            ..Forward::new(h.id)
+        }
+    }
+
+    #[test]
+    fn forward_validation() {
+        let mut data = Data::default();
+        let good = forward(&mut data);
+        data.upsert_forward(good.clone()).unwrap();
+
+        let unknown_host = Forward {
+            host_id: Uuid::new_v4(),
+            ..good.clone()
+        };
+        assert_eq!(
+            data.upsert_forward(unknown_host),
+            Err(HostError::MissingHost)
+        );
+        let no_port = Forward {
+            bind_port: 0,
+            ..good.clone()
+        };
+        assert_eq!(data.upsert_forward(no_port), Err(HostError::InvalidPort));
+        let no_bind = Forward {
+            bind_address: " ".into(),
+            ..good.clone()
+        };
+        assert_eq!(
+            data.upsert_forward(no_bind),
+            Err(HostError::MissingBindAddress)
+        );
+        let no_dest = Forward {
+            dest_host: String::new(),
+            ..good.clone()
+        };
+        assert_eq!(
+            data.upsert_forward(no_dest),
+            Err(HostError::MissingDestination)
+        );
+
+        // A dynamic forward needs no destination, and drops a stale one.
+        let dynamic = Forward {
+            kind: ForwardKind::Dynamic,
+            ..good.clone()
+        };
+        data.upsert_forward(dynamic).unwrap();
+        assert_eq!(data.forwards.len(), 1);
+        assert_eq!(data.forwards[0].dest_host, "");
+        assert_eq!(data.forwards[0].summary(), "127.0.0.1:8080 (SOCKS5)");
+    }
+
+    #[test]
+    fn forward_text_and_loopback_check() {
+        let mut data = Data::default();
+        let mut f = forward(&mut data);
+        assert_eq!(f.summary(), "127.0.0.1:8080 -> db.internal:5432");
+        assert_eq!(
+            f.describe("fw"),
+            "Connections to 127.0.0.1:8080 on this computer go through fw to db.internal:5432."
+        );
+        assert!(f.binds_loopback());
+        f.bind_address = "0.0.0.0".into();
+        assert!(!f.binds_loopback());
+        f.kind = ForwardKind::Remote;
+        assert!(
+            f.describe("fw")
+                .starts_with("Connections to 0.0.0.0:8080 on fw come back")
+        );
+    }
+
+    #[test]
+    fn removing_a_host_removes_its_forwards() {
+        let mut data = Data::default();
+        let f = forward(&mut data);
+        data.upsert_forward(f.clone()).unwrap();
+        data.remove_host(f.host_id);
+        assert!(data.forwards.is_empty());
+    }
+
     #[test]
     fn old_files_without_new_fields_still_load() {
         let json = r#"{"hosts":[{"id":"6f0c3b1e-58c4-4a57-9d0b-1f4f3f0f6b11","label":"a","address":"a"}]}"#;
         let data: Data = serde_json::from_str(json).unwrap();
         assert_eq!(data.hosts[0].port, 22);
         assert_eq!(data.hosts[0].auth, AuthMethod::Password);
+        assert!(data.forwards.is_empty());
         assert_eq!(data.settings, Settings::default());
     }
 }

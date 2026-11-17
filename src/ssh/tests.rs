@@ -27,6 +27,9 @@ struct TestServer {
     authorized_key: Option<russh::keys::PublicKey>,
     /// Channels of this client that carry forwarded TCP, not a shell.
     forwarded: Vec<ChannelId>,
+    /// Result of trying to open a forwarded-tcpip channel nobody asked for:
+    /// `Some(true)` if the client accepted it.
+    unsolicited_forward_accepted: Arc<Mutex<Option<bool>>>,
 }
 
 impl server::Server for TestServer {
@@ -95,7 +98,51 @@ impl server::Handler for TestServer {
     ) -> Result<(), Self::Error> {
         session.channel_success(channel)?;
         session.data(channel, b"ready\r\n".to_vec())?;
+        // Act like a hostile server: try to open a connection back to the
+        // client although no remote forward was requested.
+        let handle = session.handle();
+        let outcome = self.unsolicited_forward_accepted.clone();
+        tokio::spawn(async move {
+            let accepted = handle
+                .channel_open_forwarded_tcpip("127.0.0.1", 1, "127.0.0.1", 2)
+                .await
+                .is_ok();
+            *outcome.lock().unwrap() = Some(accepted);
+        });
         Ok(())
+    }
+
+    async fn tcpip_forward(
+        &mut self,
+        address: &str,
+        port: &mut u32,
+        session: &mut Session,
+    ) -> Result<bool, Self::Error> {
+        let Ok(listener) = TcpListener::bind((address, *port as u16)).await else {
+            return Ok(false);
+        };
+        let bound = listener.local_addr().unwrap().port() as u32;
+        *port = bound;
+        let address = address.to_string();
+        let handle = session.handle();
+        tokio::spawn(async move {
+            while let Ok((mut stream, peer)) = listener.accept().await {
+                let opened = handle
+                    .channel_open_forwarded_tcpip(
+                        address.clone(),
+                        bound,
+                        peer.ip().to_string(),
+                        peer.port() as u32,
+                    )
+                    .await;
+                let Ok(channel) = opened else { break };
+                tokio::spawn(async move {
+                    let mut channel = channel.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut stream, &mut channel).await;
+                });
+            }
+        });
+        Ok(true)
     }
 
     async fn window_change_request(
@@ -517,6 +564,198 @@ async fn shell_session_reports_connection_errors() {
             }
             SessionEvent::Status(_) => {}
             _ => panic!("unexpected event"),
+        }
+    }
+}
+
+mod forwarding {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    use super::*;
+    use crate::ssh::forward::{ForwardEvent, ForwardHandle, ForwardSpec, spawn_forward};
+
+    /// TCP server that sends back whatever it receives. Returns its port.
+    async fn echo_server() -> u16 {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let (mut reader, mut writer) = stream.split();
+                    let _ = tokio::io::copy(&mut reader, &mut writer).await;
+                });
+            }
+        });
+        port
+    }
+
+    fn local(port: u16) -> (String, u16) {
+        ("127.0.0.1".to_string(), port)
+    }
+
+    fn start_forward(ssh_port: u16, name: &str, spec: ForwardSpec) -> ForwardHandle {
+        spawn_forward(
+            &tokio::runtime::Handle::current(),
+            vec![hop("a", ssh_port)],
+            known_hosts(name),
+            spec,
+            || {},
+        )
+    }
+
+    /// Answer prompts until the forward is up (returns its port) or closes
+    /// (returns the error text).
+    async fn until_active(handle: &ForwardHandle) -> Result<u16, String> {
+        let answers = Answers::new(true, &[PASSWORD]);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            assert!(std::time::Instant::now() < deadline, "timed out");
+            match handle.events.try_recv() {
+                Ok(ForwardEvent::Prompt(prompt)) => answers.answer(prompt),
+                Ok(ForwardEvent::Active { port }) => return Ok(port),
+                Ok(ForwardEvent::Closed { error }) => return Err(error.unwrap_or_default()),
+                Ok(_) => {}
+                Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+    }
+
+    async fn assert_echo(stream: &mut TcpStream, text: &[u8]) {
+        stream.write_all(text).await.unwrap();
+        let mut reply = vec![0u8; text.len()];
+        tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut reply))
+            .await
+            .expect("echo arrives in time")
+            .unwrap();
+        assert_eq!(reply, text);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn local_forward_reaches_the_destination_through_ssh() {
+        let server = TestServer::default();
+        let ssh_port = start(server.clone()).await;
+        let echo = echo_server().await;
+        let handle = start_forward(
+            ssh_port,
+            "fwd-local",
+            ForwardSpec::Local {
+                bind: local(0),
+                dest: local(echo),
+            },
+        );
+        let port = until_active(&handle).await.unwrap();
+
+        let mut first = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let mut second = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        assert_echo(&mut first, b"one").await;
+        assert_echo(&mut second, b"two").await;
+        assert_eq!(server.forwards.load(Ordering::SeqCst), 2);
+
+        // Dropping the handle stops listening.
+        drop(handle);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+            assert!(std::time::Instant::now() < deadline, "listener still open");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dynamic_forward_speaks_socks5() {
+        let ssh_port = start(TestServer::default()).await;
+        let echo = echo_server().await;
+        let handle = start_forward(
+            ssh_port,
+            "fwd-dynamic",
+            ForwardSpec::Dynamic { bind: local(0) },
+        );
+        let port = until_active(&handle).await.unwrap();
+
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let mut request = vec![5, 1, 0, 5, 1, 0, 3, 9];
+        request.extend_from_slice(b"localhost");
+        request.extend_from_slice(&echo.to_be_bytes());
+        stream.write_all(&request).await.unwrap();
+        let mut reply = [0u8; 12];
+        stream.read_exact(&mut reply).await.unwrap();
+        assert_eq!(reply[..4], [5, 0, 5, 0], "method chosen, then success");
+        assert_echo(&mut stream, b"through socks").await;
+
+        // A destination nothing listens on is reported as unreachable.
+        let closed = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let dead_port = closed.local_addr().unwrap().port();
+        drop(closed);
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let mut request = vec![5, 1, 0, 5, 1, 0, 1, 127, 0, 0, 1];
+        request.extend_from_slice(&dead_port.to_be_bytes());
+        stream.write_all(&request).await.unwrap();
+        let mut reply = [0u8; 12];
+        stream.read_exact(&mut reply).await.unwrap();
+        assert_eq!(reply[2..4], [5, 4]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn remote_forward_brings_connections_back() {
+        let ssh_port = start(TestServer::default()).await;
+        let echo = echo_server().await;
+        let handle = start_forward(
+            ssh_port,
+            "fwd-remote",
+            ForwardSpec::Remote {
+                bind: local(0),
+                dest: local(echo),
+            },
+        );
+        let port = until_active(&handle).await.unwrap();
+        assert_ne!(port, 0, "the port chosen by the server is reported");
+
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        assert_echo(&mut stream, b"from the far side").await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn busy_local_port_is_reported() {
+        let ssh_port = start(TestServer::default()).await;
+        let taken = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let handle = start_forward(
+            ssh_port,
+            "fwd-busy",
+            ForwardSpec::Local {
+                bind: local(taken.local_addr().unwrap().port()),
+                dest: local(1),
+            },
+        );
+        let error = until_active(&handle).await.unwrap_err();
+        assert!(
+            error.starts_with("Could not listen on 127.0.0.1:"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn shell_sessions_refuse_unrequested_connections_from_the_server() {
+        let server = TestServer::default();
+        let port = start(server.clone()).await;
+        let answers = Answers::new(true, &[PASSWORD]);
+        let session = spawn_shell(
+            &tokio::runtime::Handle::current(),
+            vec![hop("a", port)],
+            known_hosts("unsolicited"),
+            (80, 24),
+            || {},
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            assert!(std::time::Instant::now() < deadline, "timed out");
+            if let Ok(SessionEvent::Prompt(prompt)) = session.events.try_recv() {
+                answers.answer(prompt);
+            }
+            if let Some(accepted) = *server.unsolicited_forward_accepted.lock().unwrap() {
+                assert!(!accepted, "the client must reject the channel");
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 }

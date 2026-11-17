@@ -7,11 +7,73 @@ use uuid::Uuid;
 use crate::{
     model::Data,
     session::{Session, SessionState},
-    ssh::{Hop, KnownHosts},
+    ssh::{
+        Hop, KnownHosts, Prompt,
+        forward::{ForwardEvent, ForwardHandle, ForwardSpec, spawn_forward},
+    },
     store::Store,
     theme::Theme,
-    ui::{self, hosts::HostsPage, session::SessionAction},
+    ui::{self, forwards::ForwardsPage, hosts::HostsPage, session::SessionAction},
 };
+
+pub enum ForwardState {
+    Connecting(String),
+    /// Up and listening on `port`.
+    Active {
+        port: u16,
+    },
+    /// Ended, with the reason if it did not stop normally.
+    Closed(Option<String>),
+}
+
+/// A forward that was started in this run of the app.
+pub struct ActiveForward {
+    pub forward_id: Uuid,
+    pub state: ForwardState,
+    /// Connections currently open through it.
+    pub connections: usize,
+    pub prompt: Option<Prompt>,
+    pub secret_input: String,
+    /// `None` once the forward has ended; dropping it stops the forward.
+    handle: Option<ForwardHandle>,
+}
+
+impl ActiveForward {
+    fn poll(&mut self) {
+        let Some(handle) = &self.handle else {
+            return;
+        };
+        let mut ended = false;
+        while let Ok(event) = handle.events.try_recv() {
+            match event {
+                ForwardEvent::Status(text) => {
+                    if matches!(self.state, ForwardState::Connecting(_)) {
+                        self.state = ForwardState::Connecting(text);
+                    }
+                }
+                ForwardEvent::Prompt(prompt) => {
+                    self.secret_input.clear();
+                    self.prompt = Some(prompt);
+                }
+                ForwardEvent::Active { port } => {
+                    self.prompt = None;
+                    self.state = ForwardState::Active { port };
+                }
+                ForwardEvent::Connections(count) => self.connections = count,
+                ForwardEvent::Closed { error } => {
+                    self.prompt = None;
+                    self.secret_input.clear();
+                    self.connections = 0;
+                    self.state = ForwardState::Closed(error);
+                    ended = true;
+                }
+            }
+        }
+        if ended {
+            self.handle = None;
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
@@ -53,6 +115,8 @@ pub struct App {
     pub theme: Theme,
     page: Page,
     hosts_page: HostsPage,
+    forwards_page: ForwardsPage,
+    pub active_forwards: Vec<ActiveForward>,
     /// Store error message shown at the top.
     notice: Option<String>,
     /// Runs all network work off the UI thread.
@@ -104,6 +168,8 @@ impl App {
             theme,
             page: Page::Hosts,
             hosts_page: HostsPage::default(),
+            forwards_page: ForwardsPage::default(),
+            active_forwards: Vec::new(),
             notice,
         }
     }
@@ -157,6 +223,71 @@ impl App {
             Some(index) => self.sessions[index] = session,
             None => self.sessions.push(session),
         }
+    }
+
+    /// Start a saved forward, replacing an earlier run of the same rule.
+    pub fn start_forward(&mut self, ctx: &egui::Context, forward_id: Uuid) {
+        let Some(forward) = self
+            .data
+            .forwards
+            .iter()
+            .find(|forward| forward.id == forward_id)
+        else {
+            return;
+        };
+        let bind = (forward.bind_address.clone(), forward.bind_port);
+        let dest = (forward.dest_host.clone(), forward.dest_port);
+        let spec = match forward.kind {
+            crate::model::ForwardKind::Local => ForwardSpec::Local { bind, dest },
+            crate::model::ForwardKind::Remote => ForwardSpec::Remote { bind, dest },
+            crate::model::ForwardKind::Dynamic => ForwardSpec::Dynamic { bind },
+        };
+        let hops: Result<Vec<Hop>, String> = self
+            .data
+            .host(forward.host_id)
+            .ok_or_else(|| "The host for this forward no longer exists.".to_string())
+            .and_then(|host| {
+                self.data
+                    .connection_path(host)
+                    .map(|path| path.into_iter().map(Hop::from).collect())
+                    .map_err(|err| err.to_string())
+            });
+        self.stop_forward(forward_id);
+        let active = match hops {
+            Ok(hops) => {
+                let ctx = ctx.clone();
+                let handle = spawn_forward(
+                    self.runtime.handle(),
+                    hops,
+                    self.known_hosts.clone(),
+                    spec,
+                    move || ctx.request_repaint(),
+                );
+                ActiveForward {
+                    forward_id,
+                    state: ForwardState::Connecting("Starting".to_string()),
+                    connections: 0,
+                    prompt: None,
+                    secret_input: String::new(),
+                    handle: Some(handle),
+                }
+            }
+            Err(error) => ActiveForward {
+                forward_id,
+                state: ForwardState::Closed(Some(error)),
+                connections: 0,
+                prompt: None,
+                secret_input: String::new(),
+                handle: None,
+            },
+        };
+        self.active_forwards.push(active);
+    }
+
+    /// Stop a forward if it is running.
+    pub fn stop_forward(&mut self, forward_id: Uuid) {
+        self.active_forwards
+            .retain(|active| active.forward_id != forward_id);
     }
 
     fn close_session(&mut self, index: usize) {
@@ -300,6 +431,16 @@ impl eframe::App for App {
         for session in &mut self.sessions {
             session.poll();
         }
+        for forward in &mut self.active_forwards {
+            forward.poll();
+        }
+        // A forward whose host was deleted cannot keep running.
+        let forwards = &self.data.forwards;
+        self.active_forwards.retain(|active| {
+            forwards
+                .iter()
+                .any(|forward| forward.id == active.forward_id)
+        });
 
         egui::Panel::left("sidebar")
             .exact_size(196.0)
@@ -335,6 +476,11 @@ impl eframe::App for App {
             let mut page = std::mem::take(&mut self.hosts_page);
             page.editor_panel(self, ui);
             self.hosts_page = page;
+        }
+        if self.page == Page::PortForwarding {
+            let mut page = std::mem::take(&mut self.forwards_page);
+            page.editor_panel(self, ui);
+            self.forwards_page = page;
         }
 
         if let Page::Session(id) = self.page {
@@ -374,12 +520,11 @@ impl eframe::App for App {
                     "SFTP",
                     "Browse, upload and download files on your hosts.",
                 ),
-                Page::PortForwarding => ui::placeholder::show(
-                    self,
-                    ui,
-                    "Port Forwarding",
-                    "Local, remote and dynamic tunnels through your hosts.",
-                ),
+                Page::PortForwarding => {
+                    let mut page = std::mem::take(&mut self.forwards_page);
+                    page.show(self, ui);
+                    self.forwards_page = page;
+                }
                 Page::Keychain => ui::placeholder::show(
                     self,
                     ui,

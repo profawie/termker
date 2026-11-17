@@ -4,7 +4,7 @@ use eframe::egui::{self, RichText};
 
 use crate::{
     app::App,
-    session::{Session, SessionState},
+    session::SessionState,
     ssh::{HostKeyStatus, Prompt},
     theme::Theme,
 };
@@ -86,7 +86,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, index: usize) -> SessionAction {
             if prompting {
                 egui::Frame::new()
                     .inner_margin(egui::Margin::same(16))
-                    .show(ui, |ui| prompt_card(ui, &theme, session));
+                    .show(ui, |ui| {
+                        prompt_card(ui, &theme, &mut session.prompt, &mut session.secret_input);
+                    });
             }
             super::terminal::show(ui, session, &theme, font_size, !prompting);
         });
@@ -104,9 +106,15 @@ fn notice(ui: &mut egui::Ui, theme: &Theme, text: &str) {
         });
 }
 
-/// Card for the pending prompt. Answering it removes it from the session.
-fn prompt_card(ui: &mut egui::Ui, theme: &Theme, session: &mut Session) {
-    let Some(prompt) = session.prompt.take() else {
+/// Card for a pending connection prompt. Answering it clears `pending`.
+/// `secret_input` holds what is being typed into a password prompt.
+pub fn prompt_card(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    pending: &mut Option<Prompt>,
+    secret_input: &mut String,
+) {
+    let Some(prompt) = pending.take() else {
         return;
     };
     let mut keep = Some(prompt);
@@ -184,7 +192,7 @@ fn prompt_card(ui: &mut egui::Ui, theme: &Theme, session: &mut Session) {
                 reply,
             }) => {
                 let title = format!("Password for {username}@{hop}");
-                match secret_form(ui, theme, &title, retry.then_some("Wrong password. Try again."), &mut session.secret_input) {
+                match secret_form(ui, theme, &title, retry.then_some("Wrong password. Try again."), secret_input) {
                     Some(answer) => {
                         let _ = reply.send(answer);
                     }
@@ -204,7 +212,7 @@ fn prompt_card(ui: &mut egui::Ui, theme: &Theme, session: &mut Session) {
                 reply,
             }) => {
                 let title = format!("Passphrase for {key_path}");
-                match secret_form(ui, theme, &title, retry.then_some("Wrong passphrase. Try again."), &mut session.secret_input) {
+                match secret_form(ui, theme, &title, retry.then_some("Wrong passphrase. Try again."), secret_input) {
                     Some(answer) => {
                         let _ = reply.send(answer);
                     }
@@ -220,7 +228,7 @@ fn prompt_card(ui: &mut egui::Ui, theme: &Theme, session: &mut Session) {
             None => {}
         }
     });
-    session.prompt = keep;
+    *pending = keep;
 }
 
 /// Masked input with Connect and Cancel. Returns `Some(Some(secret))` when

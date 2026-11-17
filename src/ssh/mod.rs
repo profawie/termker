@@ -1,7 +1,9 @@
 //! SSH connections: host key verification, user authentication, jump hosts
 //! (ProxyJump) and interactive shell sessions. Built on `russh`.
 
+pub mod forward;
 pub mod known_hosts;
+pub mod socks;
 
 use std::{fmt, io, path::PathBuf, sync::Arc, time::Duration};
 
@@ -45,11 +47,24 @@ impl From<&Host> for Hop {
 pub enum SshError {
     Protocol(russh::Error),
     Io(io::Error),
-    Timeout { hop: String },
-    MissingUsername { hop: String },
-    HostKeyRejected { hop: String },
-    Key { path: String, reason: String },
-    AuthFailed { hop: String },
+    Timeout {
+        hop: String,
+    },
+    MissingUsername {
+        hop: String,
+    },
+    HostKeyRejected {
+        hop: String,
+    },
+    Key {
+        path: String,
+        reason: String,
+    },
+    AuthFailed {
+        hop: String,
+    },
+    /// A port forward could not be set up; the text says why.
+    Forward(String),
     Cancelled,
 }
 
@@ -67,6 +82,7 @@ impl fmt::Display for SshError {
             }
             Self::Key { path, reason } => write!(f, "Could not use key {path}: {reason}"),
             Self::AuthFailed { hop } => write!(f, "{hop} rejected the login."),
+            Self::Forward(reason) => write!(f, "{reason}"),
             Self::Cancelled => write!(f, "Cancelled."),
         }
     }
@@ -131,10 +147,15 @@ impl Prompter {
     }
 }
 
+/// Channels the server opens towards us for a remote port forward.
+pub type ForwardedChannels = mpsc::UnboundedSender<russh::Channel<client::Msg>>;
+
 pub struct ClientHandler {
     hop: Hop,
     known_hosts: KnownHosts,
     prompter: Prompter,
+    /// Set only on a connection that asked for a remote port forward.
+    forwarded: Option<ForwardedChannels>,
 }
 
 impl client::Handler for ClientHandler {
@@ -179,6 +200,27 @@ impl client::Handler for ClientHandler {
             .trust(&self.hop.address, self.hop.port, &key)?;
         Ok(true)
     }
+
+    /// The server wants to open a connection back to us. That is accepted
+    /// only on a connection where the user set up a remote port forward;
+    /// everywhere else the reply is dropped, which rejects the channel.
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: russh::Channel<client::Msg>,
+        _connected_address: &str,
+        _connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        if let Some(forwarded) = &self.forwarded
+            && forwarded.send(channel).is_ok()
+        {
+            reply.accept().await;
+        }
+        Ok(())
+    }
 }
 
 /// An authenticated connection to the target host. The connection to each
@@ -211,13 +253,25 @@ pub async fn connect(
     prompter: &Prompter,
     status: &(dyn Fn(String) + Send + Sync),
 ) -> Result<Connection, SshError> {
+    connect_with(hops, known_hosts, prompter, status, None).await
+}
+
+/// Like [`connect`], and when `forwarded` is given the target hop accepts
+/// channels the server opens for a remote port forward and sends them there.
+pub async fn connect_with(
+    hops: &[Hop],
+    known_hosts: &KnownHosts,
+    prompter: &Prompter,
+    status: &(dyn Fn(String) + Send + Sync),
+    forwarded: Option<ForwardedChannels>,
+) -> Result<Connection, SshError> {
     let config = Arc::new(client::Config {
         keepalive_interval: Some(KEEPALIVE_INTERVAL),
         ..Default::default()
     });
     let mut handles: Vec<Handle<ClientHandler>> = Vec::new();
 
-    for hop in hops {
+    for (index, hop) in hops.iter().enumerate() {
         if hop.username.is_empty() {
             return Err(SshError::MissingUsername {
                 hop: hop.name.clone(),
@@ -228,6 +282,8 @@ pub async fn connect(
             hop: hop.clone(),
             known_hosts: known_hosts.clone(),
             prompter: prompter.clone(),
+            // Only the target may open channels back to us.
+            forwarded: forwarded.clone().filter(|_| index + 1 == hops.len()),
         };
         let timeout = || SshError::Timeout {
             hop: hop.name.clone(),

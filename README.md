@@ -13,7 +13,8 @@ Version: 0.1.0
 | About screen listing every library, its version and website | Done |
 | SSH terminal (password or key file) with host key verification | Done |
 | Jump server (ProxyJump), any number of hops | Done |
-| SFTP and port forwarding | In progress |
+| Port forwarding: local, remote and dynamic (SOCKS5) | Done |
+| SFTP | In progress |
 | Keychain: key generation, identities, certificates, FIDO2 | In progress |
 
 ## Build and run
