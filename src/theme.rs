@@ -1,4 +1,4 @@
-//! Tema warna. Lalai ialah "Phosphor": teks hijau di atas latar hitam.
+//! Color themes. The default is "Phosphor": green text on a black background.
 
 use eframe::egui::{self, Color32, CornerRadius, Stroke};
 
@@ -8,17 +8,17 @@ pub const DEFAULT_THEME: &str = "Phosphor";
 pub struct Theme {
     pub name: &'static str,
     pub dark: bool,
-    /// Latar utama dan latar terminal.
+    /// Main background and terminal background.
     pub bg: Color32,
-    /// Latar bar sisi dan panel.
+    /// Sidebar and panel background.
     pub panel: Color32,
-    /// Latar kad dan medan input.
+    /// Card and input field background.
     pub surface: Color32,
     pub border: Color32,
     pub text: Color32,
     pub text_dim: Color32,
     pub accent: Color32,
-    /// Warna teks di atas `accent`.
+    /// Text color on top of `accent`.
     pub on_accent: Color32,
     pub danger: Color32,
 }
@@ -96,14 +96,14 @@ pub const THEMES: &[Theme] = &[
 ];
 
 impl Theme {
-    /// Tema bernama `name`, atau tema lalai jika nama tidak dikenali.
+    /// The theme called `name`, or the default theme if the name is unknown.
     pub fn by_name(name: &str) -> Theme {
         THEMES
             .iter()
             .find(|theme| theme.name == name)
             .or_else(|| THEMES.iter().find(|theme| theme.name == DEFAULT_THEME))
             .copied()
-            .expect("tema lalai wujud")
+            .expect("default theme exists")
     }
 
     pub fn apply(&self, ctx: &egui::Context) {
@@ -184,12 +184,12 @@ mod tests {
         assert!(theme.dark);
         assert_eq!(theme.bg, Color32::BLACK);
         let [r, g, b, _] = theme.text.to_array();
-        assert!(g > r && g > b, "teks lalai mesti hijau");
+        assert!(g > r && g > b, "default text must be green");
     }
 
     #[test]
     fn unknown_theme_falls_back_to_default() {
-        assert_eq!(Theme::by_name("tiada").name, DEFAULT_THEME);
+        assert_eq!(Theme::by_name("missing").name, DEFAULT_THEME);
     }
 
     #[test]
@@ -199,7 +199,7 @@ mod tests {
         }
     }
 
-    /// Nisbah kontras WCAG antara teks dan latar mesti sekurang-kurangnya 4.5.
+    /// WCAG contrast ratio between text and background must be at least 4.5.
     #[test]
     fn text_is_readable_on_every_background() {
         fn luminance(c: Color32) -> f32 {

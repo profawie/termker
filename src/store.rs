@@ -1,6 +1,6 @@
-//! Menyimpan `Data` sebagai JSON dalam folder konfigurasi pengguna.
+//! Persists `Data` as JSON in the per-user config folder.
 //!
-//! Fail ini tidak pernah mengandungi kata laluan atau kunci peribadi.
+//! This file never contains passwords or private keys.
 
 use std::{fs, io, path::PathBuf};
 
@@ -11,8 +11,8 @@ pub struct Store {
 }
 
 impl Store {
-    /// Stor di lokasi lalai OS, contohnya `%APPDATA%\rterminalfy\config` di
-    /// Windows dan `~/Library/Application Support/rterminalfy` di macOS.
+    /// Store at the OS default location, e.g. `%APPDATA%\rterminalfy\config`
+    /// on Windows and `~/Library/Application Support/rterminalfy` on macOS.
     pub fn open_default() -> Self {
         let path = directories::ProjectDirs::from("", "", crate::APP_NAME)
             .map(|dirs| dirs.config_dir().join("data.json"));
@@ -28,7 +28,7 @@ impl Store {
         self.path.as_ref()
     }
 
-    /// Muat data. Fail yang belum wujud menghasilkan data kosong.
+    /// Load the data. A file that does not exist yet yields empty data.
     pub fn load(&self) -> io::Result<Data> {
         let Some(path) = &self.path else {
             return Ok(Data::default());
@@ -41,8 +41,8 @@ impl Store {
         }
     }
 
-    /// Tulis ke fail sementara dahulu, kemudian namakan semula, supaya fail
-    /// sedia ada tidak rosak jika penulisan terganggu.
+    /// Write to a temporary file first, then rename, so the existing file
+    /// is not damaged if the write is interrupted.
     pub fn save(&self, data: &Data) -> io::Result<()> {
         let Some(path) = &self.path else {
             return Ok(());

@@ -1,5 +1,5 @@
-//! Menjana senarai versi library terus daripada `Cargo.lock`, supaya skrin
-//! About sentiasa memaparkan versi yang benar-benar dibina ke dalam aplikasi.
+//! Generates the library version list straight from `Cargo.lock`, so the
+//! About screen always shows the versions actually built into the app.
 
 use std::{collections::BTreeMap, env, fs, path::Path};
 
@@ -17,7 +17,7 @@ fn main() {
     for name in &direct {
         let version = locked
             .get(name)
-            .unwrap_or_else(|| panic!("{name} tiada dalam Cargo.lock"));
+            .unwrap_or_else(|| panic!("{name} is missing from Cargo.lock"));
         out.push_str(&format!("    ({name:?}, {version:?}),\n"));
     }
     out.push_str("];\n");
@@ -26,7 +26,7 @@ fn main() {
     fs::write(dest, out).unwrap();
 }
 
-/// Nama setiap kebergantungan dalam bahagian `[dependencies]`.
+/// Name of every dependency in the `[dependencies]` section.
 fn direct_dependencies(manifest: &str) -> Vec<String> {
     let mut names = Vec::new();
     let mut in_deps = false;
@@ -46,7 +46,7 @@ fn direct_dependencies(manifest: &str) -> Vec<String> {
     names
 }
 
-/// Versi tertinggi bagi setiap pakej dalam `Cargo.lock`.
+/// Highest version of each package in `Cargo.lock`.
 fn locked_versions(lock: &str) -> BTreeMap<String, String> {
     let mut versions: BTreeMap<String, String> = BTreeMap::new();
     let mut name: Option<String> = None;

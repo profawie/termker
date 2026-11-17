@@ -1,4 +1,4 @@
-//! Keadaan aplikasi dan susun atur utama: bar sisi di kiri, halaman di kanan.
+//! Application state and main layout: sidebar on the left, page on the right.
 
 use eframe::egui::{self, RichText};
 
@@ -46,7 +46,7 @@ pub struct App {
     pub theme: Theme,
     page: Page,
     hosts_page: HostsPage,
-    /// Mesej ralat stor yang dipaparkan di bahagian atas.
+    /// Store error message shown at the top.
     notice: Option<String>,
 }
 
@@ -56,7 +56,7 @@ impl App {
         let (data, notice) = match store.load() {
             Ok(data) => (data, None),
             Err(err) => {
-                // Simpan salinan fail yang rosak sebelum ia ditulis ganti.
+                // Keep a copy of the unreadable file before it gets overwritten.
                 let backup = store.path().map(|path| {
                     let backup = path.with_extension("corrupt.json");
                     let _ = std::fs::copy(path, &backup);
@@ -186,7 +186,7 @@ impl eframe::App for App {
                 });
         }
 
-        // Halaman Hosts mengurus panel penyunting sendiri di sebelah kanan.
+        // The Hosts page owns its editor panel on the right.
         if self.page == Page::Hosts {
             let mut page = std::mem::take(&mut self.hosts_page);
             page.editor_panel(self, ui);

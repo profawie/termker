@@ -1,4 +1,4 @@
-//! Tetapan: pemilihan tema.
+//! Settings: theme selection.
 
 use eframe::egui::{self, RichText};
 
@@ -39,7 +39,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     );
 }
 
-/// Pratonton tema: kotak kecil yang dilukis dengan warna tema itu sendiri.
+/// Theme preview: a small box painted with that theme's own colors.
 fn swatch(ui: &mut egui::Ui, theme: &Theme, selected: bool) -> egui::Response {
     let size = egui::vec2(168.0, 96.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());

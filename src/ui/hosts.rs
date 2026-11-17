@@ -1,4 +1,4 @@
-//! Halaman Hosts: senarai kad host mengikut kumpulan, dan panel penyunting.
+//! Hosts page: host cards by group, and the editor panel.
 
 use std::collections::BTreeMap;
 
@@ -11,7 +11,7 @@ use crate::{
 };
 
 const CARD_INNER_WIDTH: f32 = 240.0;
-/// Lebar kad termasuk margin dalaman (14 setiap sisi) dan sempadan.
+/// Card width including inner margin (14 per side) and border.
 const CARD_OUTER_WIDTH: f32 = CARD_INNER_WIDTH + 30.0;
 
 #[derive(Default)]
@@ -20,8 +20,8 @@ pub struct HostsPage {
     editor: Option<Editor>,
 }
 
-/// Draf host yang sedang disunting. Port disimpan sebagai teks supaya
-/// pengguna boleh menaip dengan bebas; ia disahkan semasa menyimpan.
+/// Host draft being edited. The port is kept as text so the user can type
+/// freely; it is validated on save.
 struct Editor {
     draft: Host,
     port: String,
@@ -87,7 +87,7 @@ impl HostsPage {
 
         let mut edit: Option<Uuid> = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
-            // Kumpulan bernama dahulu, host tanpa kumpulan di hujung.
+            // Named groups first, ungrouped hosts last.
             let ordered = groups
                 .iter()
                 .filter(|(group, _)| !group.is_empty())
@@ -99,8 +99,8 @@ impl HostsPage {
                         .small()
                         .color(theme.text_dim),
                 );
-                // Bilangan lajur mengikut lebar yang ada, supaya kad tidak
-                // terlindung di bawah panel penyunting.
+                // Column count follows the available width, so cards are
+                // never hidden under the editor panel.
                 let gap = ui.spacing().item_spacing.x;
                 let columns = ((ui.available_width() + gap) / (CARD_OUTER_WIDTH + gap))
                     .floor()
@@ -148,7 +148,7 @@ impl HostsPage {
         });
     }
 
-    /// Panel kanan untuk menambah atau menyunting host.
+    /// Right-hand panel for adding or editing a host.
     pub fn editor_panel(&mut self, app: &mut App, ui: &mut egui::Ui) {
         let Some(editor) = &mut self.editor else {
             return;
@@ -316,7 +316,7 @@ fn field(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {
     );
 }
 
-/// Kad satu host. Memulangkan `true` jika pengguna mahu menyuntingnya.
+/// One host card. Returns `true` if the user wants to edit it.
 fn host_card(ui: &mut egui::Ui, app: &App, host: &Host, selected: bool) -> bool {
     let theme = app.theme;
     let mut frame = super::card(&theme);
@@ -359,7 +359,7 @@ fn host_card(ui: &mut egui::Ui, app: &App, host: &Host, selected: bool) -> bool 
     edit
 }
 
-/// Host yang sepadan dengan carian, dikumpulkan dan disusun mengikut nama.
+/// Hosts matching the search, grouped and sorted by name.
 fn grouped<'a>(data: &'a Data, search: &str) -> BTreeMap<&'a str, Vec<&'a Host>> {
     let needle = search.trim().to_lowercase();
     let mut groups: BTreeMap<&str, Vec<&Host>> = BTreeMap::new();

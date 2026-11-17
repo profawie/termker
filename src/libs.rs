@@ -1,8 +1,8 @@
-//! Senarai library yang digunakan oleh rterminalfy, untuk skrin About.
+//! Libraries used by rterminalfy, for the About screen.
 //!
-//! Versi datang daripada `Cargo.lock` semasa binaan (lihat `build.rs`).
-//! Tujuan, laman web dan lesen diselenggara di sini. Ujian di bawah gagal
-//! jika ada kebergantungan dalam `Cargo.toml` yang belum disenaraikan.
+//! Versions come from `Cargo.lock` at build time (see `build.rs`). Purpose,
+//! website and license are maintained here. The tests below fail if a
+//! dependency in `Cargo.toml` is not listed.
 
 include!(concat!(env!("OUT_DIR"), "/dependency_versions.rs"));
 
@@ -46,7 +46,7 @@ pub const LIBRARIES: &[LibraryInfo] = &[
     },
 ];
 
-/// Versi yang dibina ke dalam aplikasi bagi library bernama `name`.
+/// Version of the library `name` that is built into the app.
 pub fn version_of(name: &str) -> Option<&'static str> {
     DEPENDENCY_VERSIONS
         .iter()
@@ -63,7 +63,7 @@ mod tests {
         for (dep, _) in DEPENDENCY_VERSIONS {
             assert!(
                 LIBRARIES.iter().any(|lib| lib.name == *dep),
-                "{dep} ada dalam Cargo.toml tetapi tiada dalam LIBRARIES"
+                "{dep} is in Cargo.toml but missing from LIBRARIES"
             );
         }
     }
@@ -73,7 +73,7 @@ mod tests {
         for lib in LIBRARIES {
             assert!(
                 version_of(lib.name).is_some(),
-                "{} disenaraikan tetapi bukan kebergantungan",
+                "{} is listed but is not a dependency",
                 lib.name
             );
             assert!(lib.website.starts_with("https://"));

@@ -1,4 +1,4 @@
-//! Halaman sementara untuk ciri yang belum siap.
+//! Temporary page for features that are not built yet.
 
 use eframe::egui::{self, RichText};
 

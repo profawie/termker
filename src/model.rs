@@ -1,4 +1,4 @@
-//! Model data yang disimpan: host dan tetapan.
+//! Persisted data model: hosts and settings.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -16,7 +16,7 @@ pub struct Host {
     pub username: String,
     #[serde(default)]
     pub group: String,
-    /// Host lain yang dilalui dahulu untuk sampai ke host ini (ProxyJump).
+    /// Another host to go through first to reach this one (ProxyJump).
     #[serde(default)]
     pub jump_host: Option<Uuid>,
 }
@@ -38,7 +38,7 @@ impl Host {
         }
     }
 
-    /// Nama paparan: label jika ada, jika tidak alamat.
+    /// Display name: the label if set, otherwise the address.
     pub fn display_name(&self) -> &str {
         if self.label.trim().is_empty() {
             &self.address
@@ -47,7 +47,7 @@ impl Host {
         }
     }
 
-    /// `user@alamat:port`, dengan bahagian yang tidak perlu ditinggalkan.
+    /// `user@address:port`, leaving out the parts that are not needed.
     pub fn target(&self) -> String {
         let mut out = String::new();
         if !self.username.is_empty() {
@@ -117,10 +117,10 @@ impl Data {
         self.hosts.iter().find(|host| host.id == id)
     }
 
-    /// Laluan sambungan ke `host`: jump host paling luar dahulu, `host` terakhir.
+    /// Connection path to `host`: outermost jump host first, `host` last.
     ///
-    /// `host` tidak semestinya sudah disimpan, supaya borang boleh menyemak
-    /// draf sebelum menyimpannya.
+    /// `host` does not have to be saved yet, so the form can check a draft
+    /// before saving it.
     pub fn connection_path<'a>(&'a self, host: &'a Host) -> Result<Vec<&'a Host>, HostError> {
         let mut path = vec![host];
         let mut next = host.jump_host;
@@ -128,7 +128,7 @@ impl Data {
             if path.iter().any(|seen| seen.id == id) {
                 return Err(HostError::JumpLoop);
             }
-            // Jump host yang sudah dipadam diabaikan.
+            // A jump host that no longer exists is ignored.
             let Some(jump) = self.host(id) else { break };
             path.push(jump);
             next = jump.jump_host;
@@ -137,7 +137,7 @@ impl Data {
         Ok(path)
     }
 
-    /// Simpan host baharu atau kemas kini yang sedia ada selepas disahkan.
+    /// Insert a new host or update an existing one, after validation.
     pub fn upsert_host(&mut self, mut host: Host) -> Result<(), HostError> {
         host.label = host.label.trim().to_string();
         host.address = host.address.trim().to_string();
@@ -161,7 +161,7 @@ impl Data {
         Ok(())
     }
 
-    /// Padam host dan buang rujukan jump host kepadanya.
+    /// Delete a host and clear jump host references to it.
     pub fn remove_host(&mut self, id: Uuid) {
         self.hosts.retain(|host| host.id != id);
         for host in &mut self.hosts {

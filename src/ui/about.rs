@@ -1,5 +1,5 @@
-//! Skrin About: versi aplikasi dan setiap library yang digunakan, dengan
-//! versi sebenar dan pautan ke laman webnya.
+//! About screen: the app version and every library used, with the version
+//! actually built in and a link to its website.
 
 use eframe::egui::{self, RichText};
 
