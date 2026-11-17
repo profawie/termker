@@ -17,7 +17,7 @@ Version: 0.1.0
 | SFTP: browse, upload, download, rename, delete, new folder | Done |
 | Keychain: generate and import keys (ED25519, ECDSA, RSA), identities, OpenSSH user certificates | Done |
 | Saved passwords and passphrases in the OS credential store (opt-in) | Done |
-| FIDO2 security keys (`ed25519-sk`, `ecdsa-sk`): create, import, sign in | Done on macOS; Windows in progress |
+| FIDO2 security keys (`ed25519-sk`, `ecdsa-sk`): create, import, sign in | Done |
 
 ## Build and run
 
@@ -55,6 +55,10 @@ material and are kept in `data.json`.
 A key on a FIDO2 security key never leaves it. The file kept for it holds
 only a key handle, in the same format `ssh-keygen -t ed25519-sk` writes, and
 is useless without the security key. Its PIN is never saved.
+
+Security keys are reached over USB directly on macOS, and through Windows' own
+WebAuthn service on Windows, which shows the "Windows Security" window for the
+PIN and the touch. This needs Windows 10 version 1903 or newer.
 
 Trusted host keys are kept in a `known_hosts` file in the same folder, in the
 OpenSSH format. Your own `~/.ssh/known_hosts` is never modified.

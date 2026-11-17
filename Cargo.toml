@@ -22,9 +22,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros",
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # Security keys over USB. On Windows, direct USB access to a security key
-# needs administrator rights, so this backend is not used there.
+# needs administrator rights, so Windows' own WebAuthn API is used there.
 [target.'cfg(not(windows))'.dependencies]
 ctap-hid-fido2 = "3.6"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Networking_WindowsWebServices", "Win32_UI_WindowsAndMessaging"] }
 
 [profile.release]
 lto = "thin"

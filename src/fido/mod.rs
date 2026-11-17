@@ -5,8 +5,12 @@
 //! a key handle that only that security key can use, in the same file format
 //! `ssh-keygen -t ed25519-sk` writes.
 
+#[cfg(any(windows, test))]
+mod cose;
 #[cfg(not(windows))]
 mod hid;
+#[cfg(windows)]
+mod windows;
 
 use std::{fmt, sync::Arc};
 
@@ -79,6 +83,8 @@ pub struct Assertion {
     pub counter: u32,
 }
 
+// Windows asks for the PIN itself, so the PIN variants are not built there.
+#[cfg_attr(windows, allow(dead_code))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum FidoError {
     /// No security key is plugged in.
@@ -140,10 +146,10 @@ pub trait Authenticator: Send + Sync {
 }
 
 /// Used where no security key backend exists.
-#[cfg(any(windows, test))]
+#[cfg(test)]
 pub struct Unavailable;
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 impl Authenticator for Unavailable {
     fn make_credential(
         &self,
@@ -167,7 +173,7 @@ impl Authenticator for Unavailable {
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 fn unavailable() -> FidoError {
     FidoError::Unsupported("security keys are not available in this build".to_string())
 }
@@ -180,7 +186,7 @@ pub fn platform() -> Arc<dyn Authenticator> {
     }
     #[cfg(windows)]
     {
-        Arc::new(Unavailable)
+        Arc::new(windows::WebAuthnAuthenticator)
     }
 }
 

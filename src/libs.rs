@@ -52,6 +52,12 @@ pub const LIBRARIES: &[LibraryInfo] = &[
         license: "MIT",
     },
     LibraryInfo {
+        name: "windows",
+        purpose: "Microsoft's bindings to the Windows WebAuthn API, for FIDO2 security keys on Windows",
+        website: "https://github.com/microsoft/windows-rs",
+        license: "MIT OR Apache-2.0",
+    },
+    LibraryInfo {
         name: "keyring",
         purpose: "Saved passwords in the OS credential store (Windows Credential Manager, macOS Keychain)",
         website: "https://github.com/open-source-cooperative/keyring-rs",

@@ -558,17 +558,25 @@ fn security_key_form(ui: &mut egui::Ui, app: &mut App, form: &mut SecurityKeyFor
             });
         dim(ui, &theme, form.kind.hint());
         ui.add_space(4.0);
-        secret_field(
-            ui,
-            &theme,
-            "Security key PIN (if it has one)",
-            &mut form.pin,
-        );
-        dim(
-            ui,
-            &theme,
-            "The PIN is sent to the security key and is never saved.",
-        );
+        if fido::platform().has_own_dialogs() {
+            dim(
+                ui,
+                &theme,
+                "Windows will open its own window to ask for the PIN and the touch.",
+            );
+        } else {
+            secret_field(
+                ui,
+                &theme,
+                "Security key PIN (if it has one)",
+                &mut form.pin,
+            );
+            dim(
+                ui,
+                &theme,
+                "The PIN is sent to the security key and is never saved.",
+            );
+        }
     });
 
     if let Some(error) = &form.error {
