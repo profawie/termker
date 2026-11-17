@@ -65,6 +65,8 @@ pub enum SshError {
     },
     /// A port forward could not be set up; the text says why.
     Forward(String),
+    /// An SFTP session could not be set up or was lost; the text says why.
+    Sftp(String),
     Cancelled,
 }
 
@@ -82,7 +84,7 @@ impl fmt::Display for SshError {
             }
             Self::Key { path, reason } => write!(f, "Could not use key {path}: {reason}"),
             Self::AuthFailed { hop } => write!(f, "{hop} rejected the login."),
-            Self::Forward(reason) => write!(f, "{reason}"),
+            Self::Forward(reason) | Self::Sftp(reason) => write!(f, "{reason}"),
             Self::Cancelled => write!(f, "Cancelled."),
         }
     }
@@ -524,4 +526,4 @@ async fn run_shell(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

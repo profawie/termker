@@ -13,7 +13,7 @@ use crate::{
     },
     store::Store,
     theme::Theme,
-    ui::{self, forwards::ForwardsPage, hosts::HostsPage, session::SessionAction},
+    ui::{self, forwards::ForwardsPage, hosts::HostsPage, session::SessionAction, sftp::SftpPage},
 };
 
 pub enum ForwardState {
@@ -116,6 +116,7 @@ pub struct App {
     page: Page,
     hosts_page: HostsPage,
     forwards_page: ForwardsPage,
+    sftp_page: SftpPage,
     pub active_forwards: Vec<ActiveForward>,
     /// Store error message shown at the top.
     notice: Option<String>,
@@ -169,6 +170,7 @@ impl App {
             page: Page::Hosts,
             hosts_page: HostsPage::default(),
             forwards_page: ForwardsPage::default(),
+            sftp_page: SftpPage::default(),
             active_forwards: Vec::new(),
             notice,
         }
@@ -282,6 +284,15 @@ impl App {
             },
         };
         self.active_forwards.push(active);
+    }
+
+    /// Start a background SFTP session through `hops`.
+    pub fn spawn_sftp(
+        &self,
+        hops: Vec<Hop>,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> crate::sftp::SftpHandle {
+        crate::sftp::spawn_sftp(self.runtime.handle(), hops, self.known_hosts.clone(), wake)
     }
 
     /// Stop a forward if it is running.
@@ -434,6 +445,7 @@ impl eframe::App for App {
         for forward in &mut self.active_forwards {
             forward.poll();
         }
+        self.sftp_page.poll();
         // A forward whose host was deleted cannot keep running.
         let forwards = &self.data.forwards;
         self.active_forwards.retain(|active| {
@@ -514,12 +526,11 @@ impl eframe::App for App {
                 Page::Settings => ui::settings::show(self, ui),
                 Page::About => ui::about::show(self, ui),
                 Page::Session(_) => {}
-                Page::Sftp => ui::placeholder::show(
-                    self,
-                    ui,
-                    "SFTP",
-                    "Browse, upload and download files on your hosts.",
-                ),
+                Page::Sftp => {
+                    let mut page = std::mem::take(&mut self.sftp_page);
+                    page.show(self, ui);
+                    self.sftp_page = page;
+                }
                 Page::PortForwarding => {
                     let mut page = std::mem::take(&mut self.forwards_page);
                     page.show(self, ui);

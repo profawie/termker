@@ -27,6 +27,18 @@ pub const LIBRARIES: &[LibraryInfo] = &[
         license: "Apache-2.0",
     },
     LibraryInfo {
+        name: "russh-sftp",
+        purpose: "SFTP protocol: file listing and transfers",
+        website: "https://github.com/AspectUnk/russh-sftp",
+        license: "Apache-2.0",
+    },
+    LibraryInfo {
+        name: "rfd",
+        purpose: "Native open and save file dialogs",
+        website: "https://github.com/PolyMeilex/rfd",
+        license: "MIT",
+    },
+    LibraryInfo {
         name: "alacritty_terminal",
         purpose: "Terminal emulation (escape sequences, screen, scrollback)",
         website: "https://alacritty.org",
