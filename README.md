@@ -16,7 +16,7 @@ Version: 0.1.0
 | Port forwarding: local, remote and dynamic (SOCKS5) | Done |
 | SFTP: browse, upload, download, rename, delete, new folder | Done |
 | Keychain: generate and import keys (ED25519, ECDSA, RSA), identities, OpenSSH user certificates | Done |
-| Saved passwords in the OS keychain | Planned |
+| Saved passwords and passphrases in the OS credential store (opt-in) | Done |
 | FIDO2 security keys | Planned |
 
 ## Build and run
@@ -39,6 +39,12 @@ Hosts and settings are stored as JSON in the per-user config folder
 (`%APPDATA%\rterminalfy\config\data.json` on Windows,
 `~/Library/Application Support/rterminalfy/data.json` on macOS).
 Passwords and private keys are never written to this file.
+
+Passwords and key passphrases are asked for when connecting. If you tick
+"Remember", they are saved in the operating system's credential store
+(Windows Credential Manager or the macOS Keychain), never in a file of this
+app. A `secrets.json` file lists the names of what was saved, without the
+secrets, so the Keychain page can show the list and remove entries.
 
 Keys in the keychain are stored as one OpenSSH private key file each in a
 `keys` folder next to `data.json`, readable only by your user account. A key

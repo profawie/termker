@@ -5,6 +5,7 @@ mod app;
 mod keychain;
 mod libs;
 mod model;
+mod secrets;
 mod session;
 mod sftp;
 mod ssh;

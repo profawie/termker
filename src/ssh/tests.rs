@@ -27,6 +27,8 @@ struct TestServer {
     authorized_key: Option<russh::keys::PublicKey>,
     /// Certificate authority whose user certificates are accepted.
     trusted_ca: Option<russh::keys::PublicKey>,
+    /// Every password a client tried.
+    passwords_seen: Arc<Mutex<Vec<String>>>,
     /// Sign-in methods that succeeded, e.g. `certificate:alice`.
     logins: Arc<Mutex<Vec<String>>>,
     /// Channels of this client that carry forwarded TCP, not a shell.
@@ -47,6 +49,10 @@ impl server::Handler for TestServer {
     type Error = russh::Error;
 
     async fn auth_password(&mut self, _user: &str, password: &str) -> Result<Auth, Self::Error> {
+        self.passwords_seen
+            .lock()
+            .unwrap()
+            .push(password.to_string());
         Ok(if password == PASSWORD {
             Auth::Accept
         } else {
@@ -269,6 +275,9 @@ pub(crate) struct Answers {
     pub(crate) accept_host_key: bool,
     passwords: Arc<Mutex<Vec<&'static str>>>,
     passphrase: Option<&'static str>,
+    /// Tick "remember" on every password and passphrase answer.
+    remember: bool,
+    secrets: SecretStore,
     asked: Arc<Mutex<Vec<String>>>,
 }
 
@@ -278,6 +287,8 @@ impl Answers {
             accept_host_key,
             passwords: Arc::new(Mutex::new(passwords.iter().rev().copied().collect())),
             passphrase: None,
+            remember: false,
+            secrets: SecretStore::disabled(),
             asked: Arc::default(),
         }
     }
@@ -288,7 +299,14 @@ impl Answers {
 
     pub(crate) fn prompter(&self) -> Prompter {
         let this = self.clone();
-        Prompter::new(move |prompt| this.answer(prompt))
+        Prompter::new(move |prompt| this.answer(prompt), self.secrets.clone())
+    }
+
+    fn secret(&self, value: &str) -> Secret {
+        Secret {
+            value: value.to_string(),
+            remember: self.remember,
+        }
     }
 
     pub(crate) fn answer(&self, prompt: Prompt) {
@@ -305,11 +323,11 @@ impl Answers {
             } => {
                 asked.push(format!("password:{hop}:retry={retry}"));
                 let next = self.passwords.lock().unwrap().pop();
-                let _ = reply.send(next.map(str::to_string));
+                let _ = reply.send(next.map(|value| self.secret(value)));
             }
             Prompt::Passphrase { retry, reply, .. } => {
                 asked.push(format!("passphrase:retry={retry}"));
-                let _ = reply.send(self.passphrase.map(str::to_string));
+                let _ = reply.send(self.passphrase.map(|value| self.secret(value)));
             }
         }
     }
@@ -585,6 +603,129 @@ async fn certificate_is_presented_and_plain_key_is_the_fallback() {
     assert_eq!(*logins.lock().unwrap(), ["key:alice"]);
 }
 
+#[tokio::test]
+async fn remembered_password_is_reused_and_dropped_when_it_stops_working() {
+    let port = start(TestServer::default()).await;
+    let known = known_hosts("saved-password");
+    let hops = [hop("a", port)];
+    let secrets = SecretStore::memory();
+    let key = crate::secrets::password_key("tester", "127.0.0.1", port);
+
+    // Without the tick box nothing is saved.
+    let mut answers = Answers::new(true, &[PASSWORD]);
+    answers.secrets = secrets.clone();
+    let connection = connect(&hops, &known, &answers.prompter(), &quiet)
+        .await
+        .unwrap();
+    connection.close().await;
+    assert_eq!(secrets.get(&key), None);
+
+    // A wrong password is never saved; the one that worked is.
+    let mut answers = Answers::new(true, &["wrong", PASSWORD]);
+    answers.secrets = secrets.clone();
+    answers.remember = true;
+    let connection = connect(&hops, &known, &answers.prompter(), &quiet)
+        .await
+        .unwrap();
+    connection.close().await;
+    assert_eq!(secrets.get(&key).as_deref(), Some(PASSWORD));
+    assert_eq!(
+        secrets.saved()[0].label,
+        format!("Password for tester@127.0.0.1:{port}")
+    );
+
+    // Next time there is no prompt at all.
+    let mut answers = Answers::new(true, &[]);
+    answers.secrets = secrets.clone();
+    let connection = connect(&hops, &known, &answers.prompter(), &quiet)
+        .await
+        .unwrap();
+    connection.close().await;
+    assert_eq!(answers.asked(), Vec::<String>::new());
+
+    // A saved password the server no longer accepts is removed, and the
+    // user is asked.
+    secrets.save(&key, "stale", "old-password").unwrap();
+    let mut answers = Answers::new(true, &[PASSWORD]);
+    answers.secrets = secrets.clone();
+    let connection = connect(&hops, &known, &answers.prompter(), &quiet)
+        .await
+        .unwrap();
+    connection.close().await;
+    assert_eq!(answers.asked(), ["password:a:retry=true"]);
+    assert_eq!(secrets.get(&key), None);
+}
+
+#[tokio::test]
+async fn saved_password_is_not_sent_to_a_host_whose_key_changed() {
+    let known = known_hosts("saved-password-changed");
+    let secrets = SecretStore::memory();
+    let server = TestServer::default();
+    let seen = server.passwords_seen.clone();
+    let port = start(server).await;
+
+    // A password is saved for this address, but the key on record for it
+    // belongs to a different server.
+    let key = crate::secrets::password_key("tester", "127.0.0.1", port);
+    secrets.save(&key, "saved", PASSWORD).unwrap();
+    let other = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+    known.trust("127.0.0.1", port, other.public_key()).unwrap();
+
+    let mut answers = Answers::new(false, &[]);
+    answers.secrets = secrets.clone();
+    let result = connect(&[hop("a", port)], &known, &answers.prompter(), &quiet).await;
+    assert!(matches!(result, Err(SshError::HostKeyRejected { .. })));
+    assert_eq!(answers.asked(), ["hostkey:a:Changed"]);
+    assert!(seen.lock().unwrap().is_empty());
+    assert_eq!(secrets.get(&key).as_deref(), Some(PASSWORD));
+}
+
+#[tokio::test]
+async fn remembered_passphrase_unlocks_the_key_without_a_prompt() {
+    let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+    let port = start(TestServer {
+        authorized_key: Some(key.public_key().clone()),
+        ..Default::default()
+    })
+    .await;
+    let dir = temp_dir("saved-passphrase");
+    let known = KnownHosts::new(dir.join("known_hosts"));
+    let path = dir.join("id_encrypted");
+    let locked = key.encrypt(&mut rand::rng(), "secret").unwrap();
+    std::fs::write(
+        &path,
+        locked.to_openssh(Default::default()).unwrap().as_bytes(),
+    )
+    .unwrap();
+    let hops = [Hop {
+        auth: HopAuth::Key {
+            path: path.display().to_string(),
+            name: "laptop".to_string(),
+            certificate: None,
+        },
+        ..hop("a", port)
+    }];
+    let secrets = SecretStore::memory();
+
+    let mut answers = Answers::new(true, &[]);
+    answers.secrets = secrets.clone();
+    answers.passphrase = Some("secret");
+    answers.remember = true;
+    let connection = connect(&hops, &known, &answers.prompter(), &quiet)
+        .await
+        .unwrap();
+    connection.close().await;
+    assert_eq!(secrets.saved()[0].label, "Passphrase for key laptop");
+
+    let mut answers = Answers::new(true, &[]);
+    answers.secrets = secrets.clone();
+    let connection = connect(&hops, &known, &answers.prompter(), &quiet)
+        .await
+        .unwrap();
+    connection.close().await;
+    assert_eq!(answers.asked(), Vec::<String>::new());
+}
+
 #[test]
 fn hops_report_a_key_that_left_the_keychain() {
     let (mut data, mut host, store) = keychain_fixture("identity-missing", 22);
@@ -676,6 +817,7 @@ async fn shell_session_streams_output_input_and_resize() {
         &tokio::runtime::Handle::current(),
         vec![hop("a", port)],
         known_hosts("shell"),
+        SecretStore::disabled(),
         (80, 24),
         || {},
     );
@@ -721,6 +863,7 @@ async fn shell_session_reports_connection_errors() {
         &tokio::runtime::Handle::current(),
         vec![hop("a", port)],
         known_hosts("refused"),
+        SecretStore::disabled(),
         (80, 24),
         || {},
     );
@@ -771,6 +914,7 @@ mod forwarding {
             &tokio::runtime::Handle::current(),
             vec![hop("a", ssh_port)],
             known_hosts(name),
+            SecretStore::disabled(),
             spec,
             || {},
         )
@@ -914,6 +1058,7 @@ mod forwarding {
             &tokio::runtime::Handle::current(),
             vec![hop("a", port)],
             known_hosts("unsolicited"),
+            SecretStore::disabled(),
             (80, 24),
             || {},
         );
