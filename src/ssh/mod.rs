@@ -10,11 +10,14 @@ use std::{fmt, io, path::PathBuf, sync::Arc, time::Duration};
 use russh::{
     ChannelMsg, Disconnect,
     client::{self, Handle},
-    keys::{PrivateKeyWithHashAlg, PublicKey, load_secret_key},
+    keys::{Certificate, PrivateKeyWithHashAlg, PublicKey, load_secret_key},
 };
 use tokio::sync::{mpsc, oneshot};
 
-use crate::model::{AuthMethod, Host};
+use crate::{
+    keychain::KeyStore,
+    model::{AuthMethod, Data, Host},
+};
 pub use known_hosts::{HostKeyStatus, KnownHosts};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -28,19 +31,60 @@ pub struct Hop {
     pub address: String,
     pub port: u16,
     pub username: String,
-    pub auth: AuthMethod,
+    pub auth: HopAuth,
 }
 
-impl From<&Host> for Hop {
-    fn from(host: &Host) -> Self {
-        Self {
-            name: host.display_name().to_string(),
-            address: host.address.clone(),
-            port: host.port,
-            username: host.username.clone(),
-            auth: host.auth.clone(),
-        }
-    }
+/// How to sign in at one hop, with everything already looked up.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HopAuth {
+    Password,
+    Key {
+        /// Private key file.
+        path: String,
+        /// What to call the key in prompts and errors.
+        name: String,
+        /// OpenSSH user certificate to present with the key.
+        certificate: Option<String>,
+    },
+}
+
+/// Hops for the connection path to `host`, outermost jump host first, with
+/// identities and keychain keys resolved.
+pub fn hops(data: &Data, host: &Host, keys: &KeyStore) -> Result<Vec<Hop>, String> {
+    let path = data.connection_path(host).map_err(|err| err.to_string())?;
+    path.into_iter()
+        .map(|host| {
+            let (username, auth) = data.credentials(host);
+            let auth = match auth {
+                AuthMethod::Password => HopAuth::Password,
+                AuthMethod::KeyFile { path } => HopAuth::Key {
+                    name: path.clone(),
+                    path,
+                    certificate: None,
+                },
+                AuthMethod::Key { key } => {
+                    let entry = data.key(key).ok_or_else(|| {
+                        format!(
+                            "The key for {} is no longer in the keychain.",
+                            host.display_name()
+                        )
+                    })?;
+                    HopAuth::Key {
+                        path: keys.path(entry.id).display().to_string(),
+                        name: entry.name.clone(),
+                        certificate: entry.certificate.clone(),
+                    }
+                }
+            };
+            Ok(Hop {
+                name: host.display_name().to_string(),
+                address: host.address.clone(),
+                port: host.port,
+                username,
+                auth,
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -330,7 +374,7 @@ async fn authenticate(
     prompter: &Prompter,
 ) -> Result<(), SshError> {
     match &hop.auth {
-        AuthMethod::Password => {
+        HopAuth::Password => {
             for attempt in 0..MAX_SECRET_ATTEMPTS {
                 let password = prompter
                     .ask(|reply| Prompt::Password {
@@ -350,14 +394,29 @@ async fn authenticate(
                 }
             }
         }
-        AuthMethod::KeyFile { path } => {
-            let key = load_key(path, prompter).await?;
+        HopAuth::Key {
+            path,
+            name,
+            certificate,
+        } => {
+            let key = Arc::new(load_key(path, name, prompter).await?);
+            if let Some(certificate) = certificate {
+                let certificate =
+                    Certificate::from_openssh(certificate).map_err(|err| SshError::Key {
+                        path: name.clone(),
+                        reason: format!("its certificate cannot be read ({err})"),
+                    })?;
+                let result = handle
+                    .authenticate_openssh_cert(hop.username.clone(), key.clone(), certificate)
+                    .await?;
+                if result.success() {
+                    return Ok(());
+                }
+                // The server may still accept the plain key.
+            }
             let hash = handle.best_supported_rsa_hash().await?.flatten();
             let result = handle
-                .authenticate_publickey(
-                    hop.username.clone(),
-                    PrivateKeyWithHashAlg::new(Arc::new(key), hash),
-                )
+                .authenticate_publickey(hop.username.clone(), PrivateKeyWithHashAlg::new(key, hash))
                 .await?;
             if result.success() {
                 return Ok(());
@@ -370,10 +429,14 @@ async fn authenticate(
 }
 
 /// Load a private key, asking for a passphrase only if the key is encrypted.
-async fn load_key(path: &str, prompter: &Prompter) -> Result<russh::keys::PrivateKey, SshError> {
+async fn load_key(
+    path: &str,
+    name: &str,
+    prompter: &Prompter,
+) -> Result<russh::keys::PrivateKey, SshError> {
     let resolved = expand_home(path);
     let key_error = |reason: String| SshError::Key {
-        path: path.to_string(),
+        path: name.to_string(),
         reason,
     };
     match load_secret_key(&resolved, None) {
@@ -384,7 +447,7 @@ async fn load_key(path: &str, prompter: &Prompter) -> Result<russh::keys::Privat
     for attempt in 0..MAX_SECRET_ATTEMPTS {
         let passphrase = prompter
             .ask(|reply| Prompt::Passphrase {
-                key_path: path.to_string(),
+                key_path: name.to_string(),
                 retry: attempt > 0,
                 reply,
             })
@@ -399,7 +462,7 @@ async fn load_key(path: &str, prompter: &Prompter) -> Result<russh::keys::Privat
 }
 
 /// Expand a leading `~/` to the user's home folder.
-fn expand_home(path: &str) -> PathBuf {
+pub fn expand_home(path: &str) -> PathBuf {
     let rest = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\"));
     match (rest, directories::BaseDirs::new()) {
         (Some(rest), Some(dirs)) => dirs.home_dir().join(rest),

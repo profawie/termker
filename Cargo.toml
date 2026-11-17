@@ -11,6 +11,7 @@ rust-version = "1.92"
 alacritty_terminal = "0.26"
 directories = "6.0"
 eframe = "0.37"
+rand = { version = "0.10", features = ["thread_rng"] }
 rfd = "0.18"
 russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "flate2"] }
 russh-sftp = "3"
@@ -22,6 +23,3 @@ uuid = { version = "1", features = ["v4", "serde"] }
 [profile.release]
 lto = "thin"
 strip = true
-
-[dev-dependencies]
-rand = { version = "0.10", features = ["thread_rng"] }

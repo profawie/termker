@@ -25,6 +25,10 @@ struct TestServer {
     /// Number of direct-tcpip channels opened through this server.
     forwards: Arc<AtomicUsize>,
     authorized_key: Option<russh::keys::PublicKey>,
+    /// Certificate authority whose user certificates are accepted.
+    trusted_ca: Option<russh::keys::PublicKey>,
+    /// Sign-in methods that succeeded, e.g. `certificate:alice`.
+    logins: Arc<Mutex<Vec<String>>>,
     /// Channels of this client that carry forwarded TCP, not a shell.
     forwarded: Vec<ChannelId>,
     /// Result of trying to open a forwarded-tcpip channel nobody asked for:
@@ -60,6 +64,31 @@ impl server::Handler for TestServer {
             .as_ref()
             .is_some_and(|known| known.key_data() == key.public_key.key_data());
         Ok(if accepted {
+            self.logins.lock().unwrap().push(format!("key:{_user}"));
+            Auth::Accept
+        } else {
+            Auth::reject()
+        })
+    }
+
+    async fn auth_openssh_certificate(
+        &mut self,
+        user: &str,
+        certificate: &russh::keys::Certificate,
+    ) -> Result<Auth, Self::Error> {
+        let trusted = self.trusted_ca.as_ref().is_some_and(|ca| {
+            let fingerprint = ca.fingerprint(russh::keys::HashAlg::Sha256);
+            certificate.validate([&fingerprint]).is_ok()
+        });
+        let allowed = certificate
+            .valid_principals()
+            .iter()
+            .any(|principal| principal == user);
+        Ok(if trusted && allowed {
+            self.logins
+                .lock()
+                .unwrap()
+                .push(format!("certificate:{user}"));
             Auth::Accept
         } else {
             Auth::reject()
@@ -220,7 +249,7 @@ pub(crate) fn hop(name: &str, port: u16) -> Hop {
         address: "127.0.0.1".into(),
         port,
         username: "tester".into(),
-        auth: AuthMethod::Password,
+        auth: HopAuth::Password,
     }
 }
 
@@ -425,6 +454,147 @@ async fn target_is_reached_through_the_jump_host() {
     connection.close().await;
 }
 
+/// A keychain with one generated key, used by a host through an identity.
+fn keychain_fixture(name: &str, port: u16) -> (crate::model::Data, Host, KeyStore) {
+    use crate::model::{Data, Identity};
+    let store = KeyStore::new(temp_dir(name).join("keys"));
+    let entry =
+        crate::keychain::generate(&store, crate::keychain::KeyKind::Ed25519, "laptop", "").unwrap();
+    let identity = Identity {
+        name: "Alice".into(),
+        username: "alice".into(),
+        key: Some(entry.id),
+        ..Identity::new()
+    };
+    let host = Host {
+        label: "a".into(),
+        address: "127.0.0.1".into(),
+        port,
+        username: "ignored".into(),
+        identity: Some(identity.id),
+        ..Host::new()
+    };
+    let data = Data {
+        hosts: vec![host.clone()],
+        keys: vec![entry],
+        identities: vec![identity],
+        ..Default::default()
+    };
+    (data, host, store)
+}
+
+#[tokio::test]
+async fn identity_with_keychain_key_signs_in() {
+    let (data, host, store) = keychain_fixture("identity-key", 0);
+    let public = russh::keys::PublicKey::from_openssh(&data.keys[0].public_key).unwrap();
+    let server = TestServer {
+        authorized_key: Some(public),
+        ..Default::default()
+    };
+    let logins = server.logins.clone();
+    let port = start(server).await;
+    let host = Host { port, ..host };
+
+    let hops = hops(&data, &host, &store).unwrap();
+    assert_eq!(hops[0].username, "alice");
+    let answers = Answers::new(true, &[]);
+    let connection = connect(
+        &hops,
+        &known_hosts("identity-key"),
+        &answers.prompter(),
+        &quiet,
+    )
+    .await
+    .unwrap();
+    connection.close().await;
+    assert_eq!(*logins.lock().unwrap(), ["key:alice"]);
+}
+
+#[tokio::test]
+async fn certificate_is_presented_and_plain_key_is_the_fallback() {
+    use russh::keys::ssh_key::certificate::{Builder, CertType};
+
+    let (mut data, host, store) = keychain_fixture("identity-cert", 0);
+    let subject = russh::keys::PublicKey::from_openssh(&data.keys[0].public_key).unwrap();
+    let ca = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let sign = |principal: &str| {
+        let mut builder =
+            Builder::new_with_random_nonce(&mut rand::rng(), &subject, now - 60, now + 3600)
+                .unwrap();
+        builder.cert_type(CertType::User).unwrap();
+        builder.valid_principal(principal).unwrap();
+        builder.sign(&ca).unwrap().to_openssh().unwrap()
+    };
+
+    // The server trusts the CA and does not know the key itself.
+    let server = TestServer {
+        trusted_ca: Some(ca.public_key().clone()),
+        ..Default::default()
+    };
+    let logins = server.logins.clone();
+    let port = start(server).await;
+    let host = Host { port, ..host };
+    let known = known_hosts("identity-cert");
+    let answers = Answers::new(true, &[]);
+
+    data.keys[0].certificate =
+        Some(crate::keychain::check_certificate(&sign("alice"), &data.keys[0]).unwrap());
+    let connection = connect(
+        &hops(&data, &host, &store).unwrap(),
+        &known,
+        &answers.prompter(),
+        &quiet,
+    )
+    .await
+    .unwrap();
+    connection.close().await;
+    assert_eq!(*logins.lock().unwrap(), ["certificate:alice"]);
+
+    // A certificate for another user is refused, and so is the bare key.
+    data.keys[0].certificate = Some(sign("bob"));
+    let result = connect(
+        &hops(&data, &host, &store).unwrap(),
+        &known,
+        &answers.prompter(),
+        &quiet,
+    )
+    .await;
+    assert!(matches!(result, Err(SshError::AuthFailed { .. })));
+
+    // When the server knows the key, a refused certificate does not block it.
+    let server = TestServer {
+        authorized_key: Some(subject.clone()),
+        ..Default::default()
+    };
+    let logins = server.logins.clone();
+    let port = start(server).await;
+    let host = Host { port, ..host };
+    let connection = connect(
+        &hops(&data, &host, &store).unwrap(),
+        &known_hosts("identity-cert-fallback"),
+        &answers.prompter(),
+        &quiet,
+    )
+    .await
+    .unwrap();
+    connection.close().await;
+    assert_eq!(*logins.lock().unwrap(), ["key:alice"]);
+}
+
+#[test]
+fn hops_report_a_key_that_left_the_keychain() {
+    let (mut data, mut host, store) = keychain_fixture("identity-missing", 22);
+    let key = data.keys.remove(0).id;
+    host.identity = None;
+    host.auth = crate::model::AuthMethod::Key { key };
+    let error = hops(&data, &host, &store).unwrap_err();
+    assert_eq!(error, "The key for a is no longer in the keychain.");
+}
+
 #[tokio::test]
 async fn key_file_auth_with_and_without_passphrase() {
     let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
@@ -451,8 +621,10 @@ async fn key_file_auth_with_and_without_passphrase() {
     .unwrap();
 
     let with_key = |path: &std::path::Path| Hop {
-        auth: AuthMethod::KeyFile {
+        auth: HopAuth::Key {
             path: path.display().to_string(),
+            name: "test key".to_string(),
+            certificate: None,
         },
         ..hop("a", port)
     };

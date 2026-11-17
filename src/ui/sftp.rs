@@ -298,10 +298,13 @@ impl SftpPage {
         let Some(host) = app.data.host(host_id) else {
             return;
         };
-        let Ok(path) = app.data.connection_path(host) else {
-            return;
+        let hops: Vec<Hop> = match app.hops(host) {
+            Ok(hops) => hops,
+            Err(err) => {
+                app.notify(err);
+                return;
+            }
         };
-        let hops: Vec<Hop> = path.into_iter().map(Hop::from).collect();
         let ctx = ctx.clone();
         let handle = app.spawn_sftp(hops, move || ctx.request_repaint());
         self.browser = Some(Browser {
