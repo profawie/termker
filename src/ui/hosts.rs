@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::{
     app::App,
-    model::{Data, Host},
+    model::{AuthMethod, Data, Host},
 };
 
 const CARD_INNER_WIDTH: f32 = 240.0;
@@ -86,6 +86,7 @@ impl HostsPage {
         }
 
         let mut edit: Option<Uuid> = None;
+        let mut connect: Option<Uuid> = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
             // Named groups first, ungrouped hosts last.
             let ordered = groups
@@ -112,8 +113,10 @@ impl HostsPage {
                                 .editor
                                 .as_ref()
                                 .is_some_and(|editor| editor.draft.id == host.id);
-                            if host_card(ui, app, host, selected) {
-                                edit = Some(host.id);
+                            match host_card(ui, app, host, selected) {
+                                CardAction::Edit => edit = Some(host.id),
+                                CardAction::Connect => connect = Some(host.id),
+                                CardAction::None => {}
                             }
                         }
                     });
@@ -123,6 +126,10 @@ impl HostsPage {
         });
         if let Some(host) = edit.and_then(|id| app.data.host(id)) {
             self.editor = Some(Editor::from_host(host.clone(), false));
+        }
+        if let Some(id) = connect {
+            self.editor = None;
+            app.connect(ui.ctx(), id);
         }
     }
 
@@ -188,6 +195,33 @@ impl HostsPage {
                     &mut editor.draft.group,
                     "Optional, e.g. Production",
                 );
+
+                ui.label(RichText::new("Sign in with").small().color(theme.text_dim));
+                let uses_key = matches!(editor.draft.auth, AuthMethod::KeyFile { .. });
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(!uses_key, "Password").clicked() {
+                        editor.draft.auth = AuthMethod::Password;
+                    }
+                    if ui.selectable_label(uses_key, "Private key file").clicked() && !uses_key {
+                        editor.draft.auth = AuthMethod::KeyFile {
+                            path: String::new(),
+                        };
+                    }
+                });
+                match &mut editor.draft.auth {
+                    AuthMethod::Password => {
+                        ui.label(
+                            RichText::new(
+                                "You are asked for the password when connecting. It is not saved.",
+                            )
+                            .small()
+                            .color(theme.text_dim),
+                        );
+                    }
+                    AuthMethod::KeyFile { path } => {
+                        field(ui, "Key file", path, "~/.ssh/id_ed25519");
+                    }
+                }
 
                 ui.label(RichText::new("Jump host").small().color(theme.text_dim));
                 let current = editor
@@ -316,14 +350,20 @@ fn field(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {
     );
 }
 
-/// One host card. Returns `true` if the user wants to edit it.
-fn host_card(ui: &mut egui::Ui, app: &App, host: &Host, selected: bool) -> bool {
+enum CardAction {
+    None,
+    Edit,
+    Connect,
+}
+
+/// One host card, with its Connect and Edit buttons.
+fn host_card(ui: &mut egui::Ui, app: &App, host: &Host, selected: bool) -> CardAction {
     let theme = app.theme;
     let mut frame = super::card(&theme);
     if selected {
         frame = frame.stroke(egui::Stroke::new(1.5, theme.accent));
     }
-    let mut edit = false;
+    let mut action = CardAction::None;
     frame.show(ui, |ui| {
         ui.set_width(CARD_INNER_WIDTH);
         ui.vertical(|ui| {
@@ -350,13 +390,19 @@ fn host_card(ui: &mut egui::Ui, app: &App, host: &Host, selected: bool) -> bool 
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("Edit").clicked() {
-                        edit = true;
+                        action = CardAction::Edit;
                     }
                 });
             });
+            ui.add_space(2.0);
+            let connect = super::primary_button(&theme, "Connect")
+                .min_size(egui::vec2(ui.available_width(), 28.0));
+            if ui.add(connect).clicked() {
+                action = CardAction::Connect;
+            }
         });
     });
-    edit
+    action
 }
 
 /// Hosts matching the search, grouped and sorted by name.
