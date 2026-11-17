@@ -19,6 +19,20 @@ pub struct Host {
     /// Another host to go through first to reach this one (ProxyJump).
     #[serde(default)]
     pub jump_host: Option<Uuid>,
+    #[serde(default)]
+    pub auth: AuthMethod,
+}
+
+/// How the user authenticates to a host. The secret itself is not stored
+/// here: passwords are asked for when connecting, and keys stay in their file.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AuthMethod {
+    #[default]
+    Password,
+    KeyFile {
+        path: String,
+    },
 }
 
 fn default_port() -> u16 {
@@ -35,6 +49,7 @@ impl Host {
             username: String::new(),
             group: String::new(),
             jump_host: None,
+            auth: AuthMethod::Password,
         }
     }
 
@@ -98,6 +113,7 @@ pub struct Data {
 #[derive(Debug, PartialEq)]
 pub enum HostError {
     MissingAddress,
+    MissingKeyPath,
     InvalidPort,
     JumpLoop,
 }
@@ -106,6 +122,7 @@ impl std::fmt::Display for HostError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::MissingAddress => "Address is required.",
+            Self::MissingKeyPath => "Choose the private key file to use.",
             Self::InvalidPort => "Port must be a number from 1 to 65535.",
             Self::JumpLoop => "This jump host would create a loop.",
         })
@@ -148,6 +165,12 @@ impl Data {
         }
         if host.port == 0 {
             return Err(HostError::InvalidPort);
+        }
+        if let AuthMethod::KeyFile { path } = &mut host.auth {
+            *path = path.trim().to_string();
+            if path.is_empty() {
+                return Err(HostError::MissingKeyPath);
+            }
         }
         self.connection_path(&host)?;
         match self
@@ -247,6 +270,21 @@ mod tests {
     }
 
     #[test]
+    fn key_file_auth_needs_a_path_and_round_trips() {
+        let mut data = Data::default();
+        let mut h = host("k");
+        h.auth = AuthMethod::KeyFile { path: "  ".into() };
+        assert_eq!(data.upsert_host(h.clone()), Err(HostError::MissingKeyPath));
+        h.auth = AuthMethod::KeyFile {
+            path: " ~/.ssh/id_ed25519 ".into(),
+        };
+        data.upsert_host(h.clone()).unwrap();
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains(r#""auth":{"type":"key_file","path":"~/.ssh/id_ed25519"}"#));
+        assert_eq!(serde_json::from_str::<Data>(&json).unwrap(), data);
+    }
+
+    #[test]
     fn remove_clears_jump_references() {
         let mut data = Data::default();
         let a = host("a");
@@ -264,6 +302,7 @@ mod tests {
         let json = r#"{"hosts":[{"id":"6f0c3b1e-58c4-4a57-9d0b-1f4f3f0f6b11","label":"a","address":"a"}]}"#;
         let data: Data = serde_json::from_str(json).unwrap();
         assert_eq!(data.hosts[0].port, 22);
+        assert_eq!(data.hosts[0].auth, AuthMethod::Password);
         assert_eq!(data.settings, Settings::default());
     }
 }

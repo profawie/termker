@@ -21,6 +21,24 @@ pub const LIBRARIES: &[LibraryInfo] = &[
         license: "MIT OR Apache-2.0",
     },
     LibraryInfo {
+        name: "russh",
+        purpose: "SSH protocol: connections, authentication, jump hosts",
+        website: "https://github.com/warp-tech/russh",
+        license: "Apache-2.0",
+    },
+    LibraryInfo {
+        name: "alacritty_terminal",
+        purpose: "Terminal emulation (escape sequences, screen, scrollback)",
+        website: "https://alacritty.org",
+        license: "Apache-2.0",
+    },
+    LibraryInfo {
+        name: "tokio",
+        purpose: "Async runtime for network connections",
+        website: "https://tokio.rs",
+        license: "MIT",
+    },
+    LibraryInfo {
         name: "serde",
         purpose: "Data serialization",
         website: "https://serde.rs",

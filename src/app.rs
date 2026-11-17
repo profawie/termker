@@ -2,11 +2,15 @@
 
 use eframe::egui::{self, RichText};
 
+use uuid::Uuid;
+
 use crate::{
     model::Data,
+    session::{Session, SessionState},
+    ssh::{Hop, KnownHosts},
     store::Store,
     theme::Theme,
-    ui::{self, hosts::HostsPage},
+    ui::{self, hosts::HostsPage, session::SessionAction},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,6 +21,8 @@ pub enum Page {
     Keychain,
     Settings,
     About,
+    /// An open terminal session, by session id.
+    Session(Uuid),
 }
 
 impl Page {
@@ -36,6 +42,7 @@ impl Page {
             Page::Keychain => "Keychain",
             Page::Settings => "Settings",
             Page::About => "About",
+            Page::Session(_) => "Session",
         }
     }
 }
@@ -48,6 +55,10 @@ pub struct App {
     hosts_page: HostsPage,
     /// Store error message shown at the top.
     notice: Option<String>,
+    /// Runs all network work off the UI thread.
+    runtime: tokio::runtime::Runtime,
+    known_hosts: KnownHosts,
+    pub sessions: Vec<Session>,
 }
 
 impl App {
@@ -74,7 +85,20 @@ impl App {
         };
         let theme = Theme::by_name(&data.settings.theme);
         theme.apply(&cc.egui_ctx);
+        let known_hosts_path = store
+            .path()
+            .and_then(|path| path.parent())
+            .map(|dir| dir.join("known_hosts"))
+            .unwrap_or_else(|| std::env::temp_dir().join("rterminalfy_known_hosts"));
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("tokio runtime starts");
         Self {
+            runtime,
+            known_hosts: KnownHosts::new(known_hosts_path),
+            sessions: Vec::new(),
             store,
             data,
             theme,
@@ -94,6 +118,56 @@ impl App {
     pub fn save(&mut self) {
         if let Err(err) = self.store.save(&self.data) {
             self.notice = Some(format!("Could not save changes: {err}"));
+        }
+    }
+
+    /// Open a terminal session to a saved host and switch to it.
+    pub fn connect(&mut self, ctx: &egui::Context, host_id: Uuid) {
+        let Some(host) = self.data.host(host_id) else {
+            return;
+        };
+        let hops: Vec<Hop> = match self.data.connection_path(host) {
+            Ok(path) => path.into_iter().map(Hop::from).collect(),
+            Err(err) => {
+                self.notice = Some(err.to_string());
+                return;
+            }
+        };
+        self.open_session(ctx, host_id, hops, None);
+    }
+
+    /// Start a session, optionally replacing the one at `replace`.
+    fn open_session(
+        &mut self,
+        ctx: &egui::Context,
+        host_id: Uuid,
+        hops: Vec<Hop>,
+        replace: Option<usize>,
+    ) {
+        let ctx = ctx.clone();
+        let session = Session::open(
+            self.runtime.handle(),
+            host_id,
+            hops,
+            self.known_hosts.clone(),
+            move || ctx.request_repaint(),
+        );
+        self.page = Page::Session(session.id);
+        match replace {
+            Some(index) => self.sessions[index] = session,
+            None => self.sessions.push(session),
+        }
+    }
+
+    fn close_session(&mut self, index: usize) {
+        let closed = self.sessions.remove(index);
+        if self.page == Page::Session(closed.id) {
+            // Move to the neighbouring session, or back to Hosts.
+            self.page = self
+                .sessions
+                .get(index.min(self.sessions.len().saturating_sub(1)))
+                .map(|session| Page::Session(session.id))
+                .unwrap_or(Page::Hosts);
         }
     }
 
@@ -119,6 +193,20 @@ impl App {
             self.nav_item(ui, page);
         }
 
+        if !self.sessions.is_empty() {
+            ui.add_space(14.0);
+            ui.label(RichText::new("SESSIONS").small().color(theme.text_dim));
+            let mut close = None;
+            for index in 0..self.sessions.len() {
+                if self.session_item(ui, index) {
+                    close = Some(index);
+                }
+            }
+            if let Some(index) = close {
+                self.close_session(index);
+            }
+        }
+
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
             ui.add_space(4.0);
             ui.label(
@@ -131,6 +219,57 @@ impl App {
                 self.nav_item(ui, page);
             }
         });
+    }
+
+    /// One open session in the sidebar. Returns `true` if its close button
+    /// was clicked.
+    fn session_item(&mut self, ui: &mut egui::Ui, index: usize) -> bool {
+        let theme = self.theme;
+        let session = &self.sessions[index];
+        let page = Page::Session(session.id);
+        let selected = self.page == page;
+        let dot = match session.state {
+            SessionState::Connected => theme.accent,
+            SessionState::Closed(Some(_)) => theme.danger,
+            _ => theme.text_dim,
+        };
+        let name = session.name.clone();
+        let mut close = false;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let close_width = 26.0;
+            let text_color = if selected {
+                theme.on_accent
+            } else {
+                theme.text
+            };
+            let mut button =
+                egui::Button::new(RichText::new(format!("    {name}")).color(text_color))
+                    .min_size(egui::vec2(ui.available_width() - close_width - 4.0, 30.0))
+                    .truncate()
+                    .frame_when_inactive(false);
+            if selected {
+                button = button.fill(theme.accent).frame_when_inactive(true);
+            }
+            let response = ui.add(button);
+            let center = egui::pos2(response.rect.left() + 14.0, response.rect.center().y);
+            ui.painter()
+                .circle_filled(center, 4.0, if selected { theme.on_accent } else { dot });
+            if response.clicked() {
+                self.page = page;
+            }
+            let close_button = egui::Button::new("x")
+                .min_size(egui::vec2(close_width, 30.0))
+                .frame_when_inactive(false);
+            if ui
+                .add(close_button)
+                .on_hover_text("Close session")
+                .clicked()
+            {
+                close = true;
+            }
+        });
+        close
     }
 
     fn nav_item(&mut self, ui: &mut egui::Ui, page: Page) {
@@ -156,6 +295,11 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let theme = self.theme;
+
+        // Sessions keep receiving output while another page is shown.
+        for session in &mut self.sessions {
+            session.poll();
+        }
 
         egui::Panel::left("sidebar")
             .exact_size(196.0)
@@ -193,6 +337,22 @@ impl eframe::App for App {
             self.hosts_page = page;
         }
 
+        if let Page::Session(id) = self.page {
+            match self.sessions.iter().position(|session| session.id == id) {
+                Some(index) => match ui::session::show(self, ui, index) {
+                    SessionAction::None => {}
+                    SessionAction::Close => self.close_session(index),
+                    SessionAction::Reconnect => {
+                        let session = &self.sessions[index];
+                        let (host_id, hops) = (session.host_id, session.hops.clone());
+                        self.open_session(ui.ctx(), host_id, hops, Some(index));
+                    }
+                },
+                None => self.page = Page::Hosts,
+            }
+            return;
+        }
+
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
@@ -207,6 +367,7 @@ impl eframe::App for App {
                 }
                 Page::Settings => ui::settings::show(self, ui),
                 Page::About => ui::about::show(self, ui),
+                Page::Session(_) => {}
                 Page::Sftp => ui::placeholder::show(
                     self,
                     ui,

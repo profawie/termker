@@ -11,7 +11,8 @@ Version: 0.1.0
 | Host management with groups and search | Done |
 | Themes (default: green text on black) | Done |
 | About screen listing every library, its version and website | Done |
-| SSH terminal and jump server | In progress |
+| SSH terminal (password or key file) with host key verification | Done |
+| Jump server (ProxyJump), any number of hops | Done |
 | SFTP and port forwarding | In progress |
 | Keychain: key generation, identities, certificates, FIDO2 | In progress |
 
@@ -35,6 +36,9 @@ Hosts and settings are stored as JSON in the per-user config folder
 (`%APPDATA%\rterminalfy\config\data.json` on Windows,
 `~/Library/Application Support/rterminalfy/data.json` on macOS).
 Passwords and private keys are never written to this file.
+
+Trusted host keys are kept in a `known_hosts` file in the same folder, in the
+OpenSSH format. Your own `~/.ssh/known_hosts` is never modified.
 
 ## Libraries
 

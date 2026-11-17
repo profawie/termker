@@ -4,7 +4,10 @@
 mod app;
 mod libs;
 mod model;
+mod session;
+mod ssh;
 mod store;
+mod terminal;
 mod theme;
 mod ui;
 
