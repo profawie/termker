@@ -14,7 +14,7 @@ Version: 0.1.0
 | SSH terminal (password or key file) with host key verification | Done |
 | Jump server (ProxyJump), any number of hops | Done |
 | Port forwarding: local, remote and dynamic (SOCKS5) | Done |
-| SFTP | In progress |
+| SFTP: browse, upload, download, rename, delete, new folder | Done |
 | Keychain: key generation, identities, certificates, FIDO2 | In progress |
 
 ## Build and run

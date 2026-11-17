@@ -5,6 +5,7 @@ mod app;
 mod libs;
 mod model;
 mod session;
+mod sftp;
 mod ssh;
 mod store;
 mod terminal;

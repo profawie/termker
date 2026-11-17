@@ -18,7 +18,7 @@ use tokio::net::TcpListener;
 
 use super::*;
 
-const PASSWORD: &str = "correct";
+pub(crate) const PASSWORD: &str = "correct";
 
 #[derive(Clone, Default)]
 struct TestServer {
@@ -214,7 +214,7 @@ async fn start(server: TestServer) -> u16 {
     port
 }
 
-fn hop(name: &str, port: u16) -> Hop {
+pub(crate) fn hop(name: &str, port: u16) -> Hop {
     Hop {
         name: name.into(),
         address: "127.0.0.1".into(),
@@ -224,27 +224,27 @@ fn hop(name: &str, port: u16) -> Hop {
     }
 }
 
-fn temp_dir(name: &str) -> std::path::PathBuf {
+pub(crate) fn temp_dir(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("rterminalfy-ssh-{}-{name}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
-fn known_hosts(name: &str) -> KnownHosts {
+pub(crate) fn known_hosts(name: &str) -> KnownHosts {
     KnownHosts::new(temp_dir(name).join("known_hosts"))
 }
 
 /// Automatic answers to prompts, recording what was asked.
 #[derive(Clone)]
-struct Answers {
-    accept_host_key: bool,
+pub(crate) struct Answers {
+    pub(crate) accept_host_key: bool,
     passwords: Arc<Mutex<Vec<&'static str>>>,
     passphrase: Option<&'static str>,
     asked: Arc<Mutex<Vec<String>>>,
 }
 
 impl Answers {
-    fn new(accept_host_key: bool, passwords: &[&'static str]) -> Self {
+    pub(crate) fn new(accept_host_key: bool, passwords: &[&'static str]) -> Self {
         Self {
             accept_host_key,
             passwords: Arc::new(Mutex::new(passwords.iter().rev().copied().collect())),
@@ -253,16 +253,16 @@ impl Answers {
         }
     }
 
-    fn asked(&self) -> Vec<String> {
+    pub(crate) fn asked(&self) -> Vec<String> {
         self.asked.lock().unwrap().clone()
     }
 
-    fn prompter(&self) -> Prompter {
+    pub(crate) fn prompter(&self) -> Prompter {
         let this = self.clone();
         Prompter::new(move |prompt| this.answer(prompt))
     }
 
-    fn answer(&self, prompt: Prompt) {
+    pub(crate) fn answer(&self, prompt: Prompt) {
         let mut asked = self.asked.lock().unwrap();
         match prompt {
             Prompt::HostKey {

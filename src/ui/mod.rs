@@ -6,6 +6,7 @@ pub mod hosts;
 pub mod placeholder;
 pub mod session;
 pub mod settings;
+pub mod sftp;
 pub mod terminal;
 
 use eframe::egui::{self, RichText};
