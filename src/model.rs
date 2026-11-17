@@ -1,4 +1,4 @@
-//! Persisted data model: hosts and settings.
+//! Persisted data model: hosts, forwards, keychain entries and settings.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -21,6 +21,10 @@ pub struct Host {
     pub jump_host: Option<Uuid>,
     #[serde(default)]
     pub auth: AuthMethod,
+    /// A keychain identity to sign in with. When set, it replaces `username`
+    /// and `auth`.
+    #[serde(default)]
+    pub identity: Option<Uuid>,
 }
 
 /// How the user authenticates to a host. The secret itself is not stored
@@ -30,9 +34,52 @@ pub struct Host {
 pub enum AuthMethod {
     #[default]
     Password,
-    KeyFile {
-        path: String,
-    },
+    /// A private key file somewhere on this computer.
+    KeyFile { path: String },
+    /// A key kept in the keychain.
+    Key { key: Uuid },
+}
+
+/// A key pair in the keychain. Only public material is kept here; the
+/// private key lives in its own file in the keys folder.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KeyEntry {
+    pub id: Uuid,
+    pub name: String,
+    /// Display name of the algorithm, e.g. `ED25519` or `RSA 4096`.
+    pub algorithm: String,
+    /// Public key as an `authorized_keys` line.
+    pub public_key: String,
+    /// SHA-256 fingerprint of the public key.
+    pub fingerprint: String,
+    /// Whether the private key file is protected by a passphrase.
+    #[serde(default)]
+    pub encrypted: bool,
+    /// OpenSSH user certificate for this key, as a `*-cert.pub` line.
+    #[serde(default)]
+    pub certificate: Option<String>,
+}
+
+/// A reusable sign-in: a username with a key or a password.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Identity {
+    pub id: Uuid,
+    pub name: String,
+    pub username: String,
+    /// Keychain key to sign in with; `None` means password.
+    #[serde(default)]
+    pub key: Option<Uuid>,
+}
+
+impl Identity {
+    pub fn new() -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            name: String::new(),
+            username: String::new(),
+            key: None,
+        }
+    }
 }
 
 fn default_port() -> u16 {
@@ -50,6 +97,7 @@ impl Host {
             group: String::new(),
             jump_host: None,
             auth: AuthMethod::Password,
+            identity: None,
         }
     }
 
@@ -218,6 +266,10 @@ pub struct Data {
     #[serde(default)]
     pub forwards: Vec<Forward>,
     #[serde(default)]
+    pub keys: Vec<KeyEntry>,
+    #[serde(default)]
+    pub identities: Vec<Identity>,
+    #[serde(default)]
     pub settings: Settings,
 }
 
@@ -230,6 +282,9 @@ pub enum HostError {
     MissingHost,
     MissingBindAddress,
     MissingDestination,
+    MissingKey,
+    MissingName,
+    MissingUsername,
 }
 
 impl std::fmt::Display for HostError {
@@ -242,6 +297,9 @@ impl std::fmt::Display for HostError {
             Self::MissingHost => "Choose the host to forward through.",
             Self::MissingBindAddress => "Listen address is required.",
             Self::MissingDestination => "Destination host and port are required.",
+            Self::MissingKey => "Choose a key from the keychain.",
+            Self::MissingName => "Name is required.",
+            Self::MissingUsername => "Username is required.",
         })
     }
 }
@@ -249,6 +307,114 @@ impl std::fmt::Display for HostError {
 impl Data {
     pub fn host(&self, id: Uuid) -> Option<&Host> {
         self.hosts.iter().find(|host| host.id == id)
+    }
+
+    pub fn key(&self, id: Uuid) -> Option<&KeyEntry> {
+        self.keys.iter().find(|key| key.id == id)
+    }
+
+    pub fn identity(&self, id: Uuid) -> Option<&Identity> {
+        self.identities.iter().find(|identity| identity.id == id)
+    }
+
+    /// Username and sign-in method for `host`, taken from its identity when
+    /// it has one. An identity that no longer exists is ignored.
+    pub fn credentials(&self, host: &Host) -> (String, AuthMethod) {
+        match host.identity.and_then(|id| self.identity(id)) {
+            Some(identity) => (
+                identity.username.clone(),
+                match identity.key {
+                    Some(key) => AuthMethod::Key { key },
+                    None => AuthMethod::Password,
+                },
+            ),
+            None => (host.username.clone(), host.auth.clone()),
+        }
+    }
+
+    /// `user@address:port` for `host`, with the username it really signs in
+    /// with.
+    pub fn target(&self, host: &Host) -> String {
+        let (username, _) = self.credentials(host);
+        Host {
+            username,
+            ..host.clone()
+        }
+        .target()
+    }
+
+    /// Number of hosts and identities that sign in with this key.
+    pub fn key_usage(&self, id: Uuid) -> usize {
+        let hosts = self
+            .hosts
+            .iter()
+            .filter(|host| host.auth == AuthMethod::Key { key: id })
+            .count();
+        let identities = self
+            .identities
+            .iter()
+            .filter(|identity| identity.key == Some(id))
+            .count();
+        hosts + identities
+    }
+
+    /// Number of hosts that sign in with this identity.
+    pub fn identity_usage(&self, id: Uuid) -> usize {
+        self.hosts
+            .iter()
+            .filter(|host| host.identity == Some(id))
+            .count()
+    }
+
+    /// Insert a new identity or update an existing one, after validation.
+    pub fn upsert_identity(&mut self, mut identity: Identity) -> Result<(), HostError> {
+        identity.name = identity.name.trim().to_string();
+        identity.username = identity.username.trim().to_string();
+        if identity.name.is_empty() {
+            return Err(HostError::MissingName);
+        }
+        if identity.username.is_empty() {
+            return Err(HostError::MissingUsername);
+        }
+        if identity.key.is_some_and(|key| self.key(key).is_none()) {
+            return Err(HostError::MissingKey);
+        }
+        match self
+            .identities
+            .iter_mut()
+            .find(|existing| existing.id == identity.id)
+        {
+            Some(existing) => *existing = identity,
+            None => self.identities.push(identity),
+        }
+        Ok(())
+    }
+
+    /// Delete an identity. Hosts that used it go back to their own username
+    /// and sign-in method.
+    pub fn remove_identity(&mut self, id: Uuid) {
+        self.identities.retain(|identity| identity.id != id);
+        for host in &mut self.hosts {
+            if host.identity == Some(id) {
+                host.identity = None;
+            }
+        }
+    }
+
+    /// Delete a key entry. Hosts and identities that used it fall back to
+    /// password sign-in.
+    pub fn remove_key(&mut self, id: Uuid) {
+        self.keys.retain(|key| key.id != id);
+        for host in &mut self.hosts {
+            if host.auth == (AuthMethod::Key { key: id }) {
+                host.auth = AuthMethod::Password;
+            }
+        }
+        for identity in &mut self.identities {
+            if identity.key == Some(id) {
+                identity.key = None;
+            }
+        }
     }
 
     /// Connection path to `host`: outermost jump host first, `host` last.
@@ -288,6 +454,14 @@ impl Data {
             if path.is_empty() {
                 return Err(HostError::MissingKeyPath);
             }
+        }
+        if let AuthMethod::Key { key } = &host.auth
+            && self.key(*key).is_none()
+        {
+            return Err(HostError::MissingKey);
+        }
+        if host.identity.is_some_and(|id| self.identity(id).is_none()) {
+            host.identity = None;
         }
         self.connection_path(&host)?;
         match self
@@ -534,6 +708,110 @@ mod tests {
         data.upsert_forward(f.clone()).unwrap();
         data.remove_host(f.host_id);
         assert!(data.forwards.is_empty());
+    }
+
+    fn key_entry(name: &str) -> KeyEntry {
+        KeyEntry {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            algorithm: "ED25519".into(),
+            public_key: "ssh-ed25519 AAAA".into(),
+            fingerprint: "SHA256:x".into(),
+            encrypted: false,
+            certificate: None,
+        }
+    }
+
+    #[test]
+    fn identity_replaces_host_username_and_auth() {
+        let mut data = Data::default();
+        let key = key_entry("work");
+        data.keys.push(key.clone());
+        let identity = Identity {
+            name: " Deploy ".into(),
+            username: " deploy ".into(),
+            key: Some(key.id),
+            ..Identity::new()
+        };
+        data.upsert_identity(identity.clone()).unwrap();
+        assert_eq!(data.identities[0].name, "Deploy");
+
+        let mut h = host("a");
+        h.username = "root".into();
+        assert_eq!(
+            data.credentials(&h),
+            ("root".to_string(), AuthMethod::Password)
+        );
+        h.identity = Some(identity.id);
+        assert_eq!(
+            data.credentials(&h),
+            ("deploy".to_string(), AuthMethod::Key { key: key.id })
+        );
+        // An identity that was deleted is ignored.
+        h.identity = Some(Uuid::new_v4());
+        assert_eq!(data.credentials(&h).0, "root");
+    }
+
+    #[test]
+    fn identity_validation() {
+        let mut data = Data::default();
+        let mut identity = Identity::new();
+        assert_eq!(
+            data.upsert_identity(identity.clone()),
+            Err(HostError::MissingName)
+        );
+        identity.name = "x".into();
+        assert_eq!(
+            data.upsert_identity(identity.clone()),
+            Err(HostError::MissingUsername)
+        );
+        identity.username = "u".into();
+        identity.key = Some(Uuid::new_v4());
+        assert_eq!(
+            data.upsert_identity(identity.clone()),
+            Err(HostError::MissingKey)
+        );
+        identity.key = None;
+        data.upsert_identity(identity).unwrap();
+    }
+
+    #[test]
+    fn removing_a_key_or_identity_clears_references() {
+        let mut data = Data::default();
+        let key = key_entry("k");
+        data.keys.push(key.clone());
+        let identity = Identity {
+            name: "i".into(),
+            username: "u".into(),
+            key: Some(key.id),
+            ..Identity::new()
+        };
+        data.upsert_identity(identity.clone()).unwrap();
+        let mut with_key = host("a");
+        with_key.auth = AuthMethod::Key { key: key.id };
+        data.upsert_host(with_key).unwrap();
+        let mut with_identity = host("b");
+        with_identity.identity = Some(identity.id);
+        data.upsert_host(with_identity).unwrap();
+        assert_eq!(data.key_usage(key.id), 2);
+        assert_eq!(data.identity_usage(identity.id), 1);
+
+        data.remove_key(key.id);
+        assert_eq!(data.hosts[0].auth, AuthMethod::Password);
+        assert_eq!(data.identities[0].key, None);
+
+        data.remove_identity(identity.id);
+        assert_eq!(data.hosts[1].identity, None);
+    }
+
+    #[test]
+    fn host_cannot_use_a_key_that_does_not_exist() {
+        let mut data = Data::default();
+        let mut h = host("a");
+        h.auth = AuthMethod::Key {
+            key: Uuid::new_v4(),
+        };
+        assert_eq!(data.upsert_host(h), Err(HostError::MissingKey));
     }
 
     #[test]

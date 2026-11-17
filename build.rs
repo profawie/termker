@@ -3,6 +3,10 @@
 
 use std::{collections::BTreeMap, env, fs, path::Path};
 
+/// Cryptography crates that come in through `russh` rather than being direct
+/// dependencies. They do the security-critical work, so About lists them too.
+const BUNDLED_CRYPTO: &[&str] = &["ssh-key", "ring"];
+
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=Cargo.lock");
@@ -10,7 +14,8 @@ fn main() {
     let manifest = fs::read_to_string("Cargo.toml").expect("Cargo.toml");
     let lock = fs::read_to_string("Cargo.lock").expect("Cargo.lock");
 
-    let direct = direct_dependencies(&manifest);
+    let mut direct = direct_dependencies(&manifest);
+    direct.extend(BUNDLED_CRYPTO.iter().map(|name| name.to_string()));
     let locked = locked_versions(&lock);
 
     let mut out = String::from("pub const DEPENDENCY_VERSIONS: &[(&str, &str)] = &[\n");

@@ -5,6 +5,7 @@ use eframe::egui::{self, RichText};
 use uuid::Uuid;
 
 use crate::{
+    keychain::KeyStore,
     model::Data,
     session::{Session, SessionState},
     ssh::{
@@ -13,7 +14,10 @@ use crate::{
     },
     store::Store,
     theme::Theme,
-    ui::{self, forwards::ForwardsPage, hosts::HostsPage, session::SessionAction, sftp::SftpPage},
+    ui::{
+        self, forwards::ForwardsPage, hosts::HostsPage, keychain::KeychainPage,
+        session::SessionAction, sftp::SftpPage,
+    },
 };
 
 pub enum ForwardState {
@@ -117,12 +121,14 @@ pub struct App {
     hosts_page: HostsPage,
     forwards_page: ForwardsPage,
     sftp_page: SftpPage,
+    keychain_page: KeychainPage,
     pub active_forwards: Vec<ActiveForward>,
     /// Store error message shown at the top.
     notice: Option<String>,
     /// Runs all network work off the UI thread.
     runtime: tokio::runtime::Runtime,
     known_hosts: KnownHosts,
+    pub key_store: KeyStore,
     pub sessions: Vec<Session>,
 }
 
@@ -150,11 +156,12 @@ impl App {
         };
         let theme = Theme::by_name(&data.settings.theme);
         theme.apply(&cc.egui_ctx);
-        let known_hosts_path = store
+        let data_dir = store
             .path()
             .and_then(|path| path.parent())
-            .map(|dir| dir.join("known_hosts"))
-            .unwrap_or_else(|| std::env::temp_dir().join("rterminalfy_known_hosts"));
+            .map(|dir| dir.to_path_buf())
+            .unwrap_or_else(|| std::env::temp_dir().join(crate::APP_NAME));
+        let known_hosts_path = data_dir.join("known_hosts");
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -163,6 +170,8 @@ impl App {
         Self {
             runtime,
             known_hosts: KnownHosts::new(known_hosts_path),
+            key_store: KeyStore::new(data_dir.join("keys")),
+            keychain_page: KeychainPage::default(),
             sessions: Vec::new(),
             store,
             data,
@@ -189,15 +198,25 @@ impl App {
         }
     }
 
+    /// Connection path to `host` with its sign-in details looked up.
+    pub fn hops(&self, host: &crate::model::Host) -> Result<Vec<Hop>, String> {
+        crate::ssh::hops(&self.data, host, &self.key_store)
+    }
+
+    /// Show a message in the bar at the top of the window.
+    pub fn notify(&mut self, message: String) {
+        self.notice = Some(message);
+    }
+
     /// Open a terminal session to a saved host and switch to it.
     pub fn connect(&mut self, ctx: &egui::Context, host_id: Uuid) {
         let Some(host) = self.data.host(host_id) else {
             return;
         };
-        let hops: Vec<Hop> = match self.data.connection_path(host) {
-            Ok(path) => path.into_iter().map(Hop::from).collect(),
+        let hops = match self.hops(host) {
+            Ok(hops) => hops,
             Err(err) => {
-                self.notice = Some(err.to_string());
+                self.notice = Some(err);
                 return;
             }
         };
@@ -248,12 +267,7 @@ impl App {
             .data
             .host(forward.host_id)
             .ok_or_else(|| "The host for this forward no longer exists.".to_string())
-            .and_then(|host| {
-                self.data
-                    .connection_path(host)
-                    .map(|path| path.into_iter().map(Hop::from).collect())
-                    .map_err(|err| err.to_string())
-            });
+            .and_then(|host| self.hops(host));
         self.stop_forward(forward_id);
         let active = match hops {
             Ok(hops) => {
@@ -494,6 +508,11 @@ impl eframe::App for App {
             page.editor_panel(self, ui);
             self.forwards_page = page;
         }
+        if self.page == Page::Keychain {
+            let mut page = std::mem::take(&mut self.keychain_page);
+            page.editor_panel(self, ui);
+            self.keychain_page = page;
+        }
 
         if let Page::Session(id) = self.page {
             match self.sessions.iter().position(|session| session.id == id) {
@@ -536,12 +555,11 @@ impl eframe::App for App {
                     page.show(self, ui);
                     self.forwards_page = page;
                 }
-                Page::Keychain => ui::placeholder::show(
-                    self,
-                    ui,
-                    "Keychain",
-                    "Generate keys and manage identities, certificates and FIDO2 keys.",
-                ),
+                Page::Keychain => {
+                    let mut page = std::mem::take(&mut self.keychain_page);
+                    page.show(self, ui);
+                    self.keychain_page = page;
+                }
             });
     }
 }

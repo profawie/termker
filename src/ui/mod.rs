@@ -3,7 +3,7 @@
 pub mod about;
 pub mod forwards;
 pub mod hosts;
-pub mod placeholder;
+pub mod keychain;
 pub mod session;
 pub mod settings;
 pub mod sftp;
@@ -39,4 +39,15 @@ pub fn primary_button(theme: &Theme, text: &str) -> egui::Button<'static> {
             .strong(),
     )
     .fill(theme.accent)
+}
+
+/// Labelled single-line text field that fills the available width.
+pub fn field(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {
+    let dim = ui.visuals().weak_text_color();
+    ui.label(RichText::new(label).small().color(dim));
+    ui.add(
+        egui::TextEdit::singleline(value)
+            .hint_text(hint)
+            .desired_width(f32::INFINITY),
+    );
 }

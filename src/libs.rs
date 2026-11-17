@@ -2,7 +2,8 @@
 //!
 //! Versions come from `Cargo.lock` at build time (see `build.rs`). Purpose,
 //! website and license are maintained here. The tests below fail if a
-//! dependency in `Cargo.toml` is not listed.
+//! dependency in `Cargo.toml` is not listed. Cryptography crates that come
+//! in through `russh` are listed as well.
 
 include!(concat!(env!("OUT_DIR"), "/dependency_versions.rs"));
 
@@ -25,6 +26,24 @@ pub const LIBRARIES: &[LibraryInfo] = &[
         purpose: "SSH protocol: connections, authentication, jump hosts",
         website: "https://github.com/warp-tech/russh",
         license: "Apache-2.0",
+    },
+    LibraryInfo {
+        name: "ssh-key",
+        purpose: "SSH keys and certificates: generate, read, encrypt (used through russh)",
+        website: "https://github.com/RustCrypto/SSH",
+        license: "Apache-2.0 OR MIT",
+    },
+    LibraryInfo {
+        name: "ring",
+        purpose: "Cryptographic primitives for the SSH transport (used through russh)",
+        website: "https://github.com/briansmith/ring",
+        license: "Apache-2.0 AND ISC",
+    },
+    LibraryInfo {
+        name: "rand",
+        purpose: "Secure random numbers for key generation",
+        website: "https://github.com/rust-random/rand",
+        license: "MIT OR Apache-2.0",
     },
     LibraryInfo {
         name: "russh-sftp",
