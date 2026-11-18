@@ -107,6 +107,7 @@ enum EditorAction {
     Save,
     Cancel,
     Delete,
+    Duplicate,
 }
 
 impl HostsPage {
@@ -564,6 +565,14 @@ impl HostsPage {
                     if ui.button("Cancel").clicked() {
                         action = Some(EditorAction::Cancel);
                     }
+                    if !editor.is_new
+                        && ui
+                            .button("Duplicate")
+                            .on_hover_text("Save a copy of this host and edit the copy")
+                            .clicked()
+                    {
+                        action = Some(EditorAction::Duplicate);
+                    }
                 });
 
                 if !editor.is_new {
@@ -611,6 +620,24 @@ impl HostsPage {
                 }
             }
             Some(EditorAction::Cancel) => self.editor = None,
+            Some(EditorAction::Duplicate) => {
+                // The copy takes what the form shows now; the host being
+                // edited keeps what was last saved.
+                let Ok(port) = editor.port.trim().parse::<u16>() else {
+                    editor.error = Some(crate::model::HostError::InvalidPort.to_string());
+                    return;
+                };
+                let mut copy = app.data.duplicate_of(&editor.draft);
+                copy.port = port;
+                match app.data.upsert_host(copy.clone()) {
+                    Ok(()) => {
+                        app.save();
+                        let copy = app.data.host(copy.id).cloned().unwrap_or(copy);
+                        self.editor = Some(Editor::from_host(copy, false));
+                    }
+                    Err(err) => editor.error = Some(err.to_string()),
+                }
+            }
             Some(EditorAction::Delete) => {
                 app.data.remove_host(editor.draft.id);
                 app.save();
