@@ -122,19 +122,22 @@ impl HostsPage {
                 );
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                if ui
-                    .add(super::primary_button(&theme, "+  New host"))
-                    .clicked()
-                {
-                    self.editor = Some(Editor::new_host());
-                }
-                if ui.button("+  New group").clicked() {
-                    self.group_form = Some(GroupForm::New {
-                        parent: String::new(),
-                        name: String::new(),
-                        error: None,
-                    });
-                }
+                // One button for both, so the header stays short.
+                let new = ui.add(super::primary_button(&theme, "+  New"));
+                egui::Popup::menu(&new).show(|ui| {
+                    if ui.button("New host").clicked() {
+                        self.editor = Some(Editor::new_host());
+                        ui.close();
+                    }
+                    if ui.button("New group").clicked() {
+                        self.group_form = Some(GroupForm::New {
+                            parent: String::new(),
+                            name: String::new(),
+                            error: None,
+                        });
+                        ui.close();
+                    }
+                });
                 ui.add(
                     egui::TextEdit::singleline(&mut self.search)
                         .hint_text("Search hosts")
@@ -977,25 +980,35 @@ fn group_header(
         ui.label(RichText::new(count).small().color(theme.text_dim));
         if named {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("Delete").clicked() {
-                    action = Some(GroupAction::Delete(section.name.to_string()));
-                }
-                if ui.small_button("Rename").clicked() {
-                    action = Some(GroupAction::Rename(section.name.to_string()));
-                }
-                if ui
-                    .small_button("+ Host")
-                    .on_hover_text("New host in this group")
-                    .clicked()
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let group = section.name.to_string();
+                if super::icon_button(ui, &theme, super::RowIcon::Delete, "Delete group").clicked()
                 {
-                    action = Some(GroupAction::AddHost(section.name.to_string()));
+                    action = Some(GroupAction::Delete(group.clone()));
                 }
-                if ui
-                    .small_button("+ Group")
-                    .on_hover_text("New group inside this one")
-                    .clicked()
+                if super::icon_button(ui, &theme, super::RowIcon::Rename, "Rename group").clicked()
                 {
-                    action = Some(GroupAction::AddGroup(section.name.to_string()));
+                    action = Some(GroupAction::Rename(group.clone()));
+                }
+                if super::icon_button(
+                    ui,
+                    &theme,
+                    super::RowIcon::NewHost,
+                    "New host in this group",
+                )
+                .clicked()
+                {
+                    action = Some(GroupAction::AddHost(group.clone()));
+                }
+                if super::icon_button(
+                    ui,
+                    &theme,
+                    super::RowIcon::NewGroup,
+                    "New group inside this one",
+                )
+                .clicked()
+                {
+                    action = Some(GroupAction::AddGroup(group));
                 }
             });
         }

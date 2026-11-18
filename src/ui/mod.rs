@@ -41,6 +41,94 @@ pub fn primary_button(theme: &Theme, text: &str) -> egui::Button<'static> {
     .fill(theme.accent)
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum RowIcon {
+    Rename,
+    Delete,
+    NewGroup,
+    NewHost,
+}
+
+/// A small square button with a drawn icon: a pencil for Rename, a bin for
+/// Delete, a folder with a plus for a new group and a screen with a plus for
+/// a new host. The name is shown when the pointer rests on it.
+pub fn icon_button(ui: &mut egui::Ui, theme: &Theme, icon: RowIcon, name: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
+    let hovered = response.hovered();
+    let color = match (icon, hovered) {
+        (RowIcon::Delete, true) => theme.danger,
+        (_, true) => theme.text,
+        (_, false) => theme.text_dim,
+    };
+    let painter = ui.painter();
+    if hovered {
+        painter.rect_filled(rect, 6.0, theme.border);
+    }
+    let stroke = egui::Stroke::new(1.4, color);
+    let c = rect.center();
+    let at = |x: f32, y: f32| c + egui::vec2(x, y);
+    match icon {
+        RowIcon::Rename => {
+            // A pencil pointing down to the left.
+            painter.add(egui::Shape::closed_line(
+                vec![at(2.5, -6.5), at(6.5, -2.5), at(-2.5, 6.5), at(-6.5, 2.5)],
+                stroke,
+            ));
+            painter.add(egui::Shape::convex_polygon(
+                vec![at(-6.5, 2.5), at(-2.5, 6.5), at(-7.0, 7.0)],
+                color,
+                stroke,
+            ));
+            painter.line_segment([at(0.0, -4.0), at(4.0, 0.0)], stroke);
+        }
+        RowIcon::Delete => {
+            // A bin: lid with a handle, and a body with two lines.
+            painter.line_segment([at(-6.5, -4.0), at(6.5, -4.0)], stroke);
+            painter.line_segment([at(-2.0, -6.5), at(2.0, -6.5)], stroke);
+            painter.line_segment([at(-2.0, -6.5), at(-2.0, -4.0)], stroke);
+            painter.line_segment([at(2.0, -6.5), at(2.0, -4.0)], stroke);
+            painter.add(egui::Shape::line(
+                vec![at(-5.0, -4.0), at(-4.0, 7.0), at(4.0, 7.0), at(5.0, -4.0)],
+                stroke,
+            ));
+            painter.line_segment([at(-1.5, -1.0), at(-1.5, 4.0)], stroke);
+            painter.line_segment([at(1.5, -1.0), at(1.5, 4.0)], stroke);
+        }
+        RowIcon::NewGroup => {
+            // A folder outline with a plus inside.
+            painter.add(egui::Shape::closed_line(
+                vec![
+                    at(-7.5, -5.5),
+                    at(-2.5, -5.5),
+                    at(-0.5, -3.5),
+                    at(7.5, -3.5),
+                    at(7.5, 6.5),
+                    at(-7.5, 6.5),
+                ],
+                stroke,
+            ));
+            painter.line_segment([at(-3.0, 1.5), at(3.0, 1.5)], stroke);
+            painter.line_segment([at(0.0, -1.5), at(0.0, 4.5)], stroke);
+        }
+        RowIcon::NewHost => {
+            // A screen on a stand with a plus inside.
+            painter.rect_stroke(
+                egui::Rect::from_min_max(at(-7.5, -6.5), at(7.5, 3.5)),
+                1.5,
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            painter.line_segment([at(-4.0, 6.5), at(4.0, 6.5)], stroke);
+            painter.line_segment([at(0.0, 3.5), at(0.0, 6.5)], stroke);
+            painter.line_segment([at(-3.0, -1.5), at(3.0, -1.5)], stroke);
+            painter.line_segment([at(0.0, -4.5), at(0.0, 1.5)], stroke);
+        }
+    }
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(name)
+}
+
 /// Labelled single-line text field that fills the available width.
 pub fn field(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {
     let dim = ui.visuals().weak_text_color();

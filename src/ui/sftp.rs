@@ -980,21 +980,18 @@ fn file_list(ui: &mut egui::Ui, theme: &Theme, pane: &mut Pane, index: usize) {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(10.0);
                         if !drives {
-                            ui.menu_button("...", |ui| {
-                                if ui.button("Rename").clicked() {
-                                    action = Some(Action::Rename(entry.name.clone()));
-                                    ui.close();
-                                }
-                                if ui
-                                    .button(RichText::new("Delete").color(theme.danger))
-                                    .clicked()
-                                {
-                                    action = Some(Action::Delete(entry.clone()));
-                                    ui.close();
-                                }
-                            })
-                            .response
-                            .on_hover_text("Rename or delete");
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            if super::icon_button(ui, theme, super::RowIcon::Delete, "Delete")
+                                .clicked()
+                            {
+                                action = Some(Action::Delete(entry.clone()));
+                            }
+                            if super::icon_button(ui, theme, super::RowIcon::Rename, "Rename")
+                                .clicked()
+                            {
+                                action = Some(Action::Rename(entry.name.clone()));
+                            }
+                            ui.spacing_mut().item_spacing.x = 6.0;
                         }
                         if show_modified {
                             fixed(ui, 118.0, &modified, theme);
