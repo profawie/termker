@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Builds and runs rterminalfy on Windows with the GNU toolchain (MinGW-w64).
+    Builds and runs termker on Windows with the GNU toolchain (MinGW-w64).
 
 .DESCRIPTION
     Same requirements as build.ps1: rustup and a 64-bit MinGW-w64 gcc on

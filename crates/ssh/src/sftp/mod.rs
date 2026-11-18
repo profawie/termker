@@ -16,7 +16,7 @@ use tokio::{
     sync::mpsc,
 };
 
-use rterminalfy_core::secrets::SecretStore;
+use termker_core::secrets::SecretStore;
 
 use crate::{self as ssh, Hop, KnownHosts, Prompt, Prompter, SshError};
 
@@ -108,7 +108,7 @@ pub fn format_permissions(mode: u32) -> String {
         .collect()
 }
 
-pub use rterminalfy_core::time::format_time;
+pub use termker_core::time::format_time;
 
 pub enum Command {
     List(String),

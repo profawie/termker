@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and run rterminalfy on macOS or Linux.
+# Build and run termker on macOS or Linux.
 #
 #   ./run.sh            debug build (compiles faster)
 #   ./run.sh --release  optimized build

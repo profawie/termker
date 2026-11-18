@@ -3,8 +3,8 @@
 
 use uuid::Uuid;
 
-use rterminalfy_core::secrets::SecretStore;
-use rterminalfy_ssh::{
+use termker_core::secrets::SecretStore;
+use termker_ssh::{
     self as ssh, Hop, KnownHosts, Prompt, SessionCommand, SessionEvent, SessionHandle,
 };
 

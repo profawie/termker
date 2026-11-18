@@ -1,4 +1,4 @@
-//! Libraries used by rterminalfy, for the About screen.
+//! Libraries used by termker, for the About screen.
 //!
 //! Versions come from `Cargo.lock` at build time (see `build.rs`). Purpose,
 //! website and license are maintained here. The tests below fail if a

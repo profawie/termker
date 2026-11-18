@@ -2,7 +2,7 @@
 
 use eframe::egui::{self, Color32, CornerRadius, Stroke};
 
-pub use rterminalfy_core::DEFAULT_THEME;
+pub use termker_core::DEFAULT_THEME;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Theme {

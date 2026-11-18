@@ -3917,57 +3917,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rterminalfy"
-version = "0.1.0"
-dependencies = [
- "alacritty_terminal",
- "eframe",
- "rfd",
- "rterminalfy-core",
- "rterminalfy-ssh",
- "rterminalfy-terminal",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "rterminalfy-core"
-version = "0.1.0"
-dependencies = [
- "directories",
- "keyring",
- "rand",
- "russh",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "rterminalfy-ssh"
-version = "0.1.0"
-dependencies = [
- "directories",
- "rand",
- "rterminalfy-core",
- "russh",
- "russh-sftp",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "rterminalfy-terminal"
-version = "0.1.0"
-dependencies = [
- "alacritty_terminal",
- "rterminalfy-core",
- "rterminalfy-ssh",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "russh"
 version = "0.65.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4741,6 +4690,57 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "termker"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "eframe",
+ "rfd",
+ "termker-core",
+ "termker-ssh",
+ "termker-terminal",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "termker-core"
+version = "0.1.0"
+dependencies = [
+ "directories",
+ "keyring",
+ "rand",
+ "russh",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "termker-ssh"
+version = "0.1.0"
+dependencies = [
+ "directories",
+ "rand",
+ "russh",
+ "russh-sftp",
+ "termker-core",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "termker-terminal"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "termker-core",
+ "termker-ssh",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

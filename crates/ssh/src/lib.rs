@@ -16,8 +16,8 @@ use russh::{
 use tokio::sync::{mpsc, oneshot};
 
 pub use known_hosts::{HostKeyStatus, KnownHosts};
-pub use rterminalfy_core::secrets::SecretStore;
-use rterminalfy_core::{
+pub use termker_core::secrets::SecretStore;
+use termker_core::{
     keychain::KeyStore,
     model::{AuthMethod, Data, Host},
     secrets,

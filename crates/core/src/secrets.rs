@@ -7,7 +7,7 @@
 
 use std::{
     fs, io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -41,18 +41,21 @@ trait Backend: Send + Sync {
     fn delete(&self, key: &str) -> Result<(), String>;
 }
 
-/// The operating system's credential store.
-struct OsBackend;
+/// The operating system's credential store, for entries filed under
+/// `service`.
+struct OsBackend {
+    service: &'static str,
+}
 
 impl OsBackend {
-    fn entry(key: &str) -> Result<keyring::Entry, String> {
-        keyring::Entry::new(SERVICE, key).map_err(|err| err.to_string())
+    fn entry(&self, key: &str) -> Result<keyring::Entry, String> {
+        keyring::Entry::new(self.service, key).map_err(|err| err.to_string())
     }
 }
 
 impl Backend for OsBackend {
     fn get(&self, key: &str) -> Result<Option<String>, String> {
-        match Self::entry(key)?.get_password() {
+        match self.entry(key)?.get_password() {
             Ok(secret) => Ok(Some(secret)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(err) => Err(err.to_string()),
@@ -60,17 +63,58 @@ impl Backend for OsBackend {
     }
 
     fn set(&self, key: &str, secret: &str) -> Result<(), String> {
-        Self::entry(key)?
+        self.entry(key)?
             .set_password(secret)
             .map_err(|err| err.to_string())
     }
 
     fn delete(&self, key: &str) -> Result<(), String> {
-        match Self::entry(key)?.delete_credential() {
+        match self.entry(key)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(err) => Err(err.to_string()),
         }
     }
+}
+
+/// Move the saved secrets listed in the index file at `index_path` from the
+/// credential store entries filed under `old_service` to this app's. Used
+/// once, after the app was renamed. Returns how many moved and how many
+/// could not be moved; the ones that could not be moved stay where they were.
+pub fn move_from_service(index_path: &Path, old_service: &'static str) -> (usize, usize) {
+    if keyring::Entry::store_status().is_err() {
+        return (0, 0);
+    }
+    let index: Vec<SavedSecret> = fs::read_to_string(index_path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    move_entries(
+        &index,
+        &OsBackend {
+            service: old_service,
+        },
+        &OsBackend { service: SERVICE },
+    )
+}
+
+fn move_entries(index: &[SavedSecret], from: &dyn Backend, to: &dyn Backend) -> (usize, usize) {
+    let (mut moved, mut failed) = (0, 0);
+    for saved in index {
+        match from.get(&saved.key) {
+            // Already moved, or removed outside the app.
+            Ok(None) => {}
+            Ok(Some(secret)) => match to.set(&saved.key, &secret) {
+                Ok(()) => {
+                    // The copy is in place, so the old entry can go.
+                    let _ = from.delete(&saved.key);
+                    moved += 1;
+                }
+                Err(_) => failed += 1,
+            },
+            Err(_) => failed += 1,
+        }
+    }
+    (moved, failed)
 }
 
 struct Inner {
@@ -99,7 +143,7 @@ impl SecretStore {
             .unwrap_or_default();
         Self {
             inner: Some(Arc::new(Inner {
-                backend: Box::new(OsBackend),
+                backend: Box::new(OsBackend { service: SERVICE }),
                 index_path: Some(index_path),
                 index: Mutex::new(index),
             })),
@@ -297,5 +341,36 @@ mod tests {
             password_key("root", "h", 2222)
         );
         assert_eq!(passphrase_key("/k/a.key"), "passphrase:/k/a.key");
+    }
+
+    #[test]
+    fn secrets_move_to_the_new_service() {
+        let old = Arc::new(memory::MemoryBackend::default());
+        let new = Arc::new(memory::MemoryBackend::default());
+        old.set("a", "one").unwrap();
+        old.set("b", "two").unwrap();
+        old.set("not-listed", "three").unwrap();
+        let index = [
+            SavedSecret {
+                key: "a".to_string(),
+                label: "A".to_string(),
+            },
+            SavedSecret {
+                key: "b".to_string(),
+                label: "B".to_string(),
+            },
+            SavedSecret {
+                key: "gone".to_string(),
+                label: "Gone".to_string(),
+            },
+        ];
+        assert_eq!(move_entries(&index, &old, &new), (2, 0));
+        assert_eq!(new.get("a").unwrap().as_deref(), Some("one"));
+        assert_eq!(new.get("b").unwrap().as_deref(), Some("two"));
+        assert_eq!(old.get("a").unwrap(), None);
+        // Only what the app saved is touched.
+        assert_eq!(old.get("not-listed").unwrap().as_deref(), Some("three"));
+        // Running it again finds nothing left to move.
+        assert_eq!(move_entries(&index, &old, &new), (0, 0));
     }
 }

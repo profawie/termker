@@ -125,7 +125,7 @@ pub struct App {
     keychain_page: KeychainPage,
     pub active_forwards: Vec<ActiveForward>,
     /// Store error message shown at the top.
-    notice: Option<String>,
+    notice: Option<Notice>,
     /// Runs all network work off the UI thread.
     runtime: tokio::runtime::Runtime,
     known_hosts: KnownHosts,
@@ -134,11 +134,55 @@ pub struct App {
     pub sessions: Vec<Session>,
 }
 
+/// A message shown in a bar at the top of the window until dismissed.
+#[derive(Clone)]
+struct Notice {
+    text: String,
+    /// Errors are shown in the theme's danger color.
+    error: bool,
+}
+
+impl Notice {
+    fn info(text: String) -> Self {
+        Self { text, error: false }
+    }
+
+    fn error(text: String) -> Self {
+        Self { text, error: true }
+    }
+}
+
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // The app used to be called rterminalfy; bring its data along.
+        let moved = match crate::migrate::from_old_name() {
+            Ok(crate::migrate::Outcome::NothingToMove) => None,
+            Ok(crate::migrate::Outcome::Moved {
+                to,
+                passwords_failed,
+                ..
+            }) => Some(Notice::info(if passwords_failed == 0 {
+                format!(
+                    "Your hosts, keys and saved passwords from {} were moved to {}.",
+                    crate::migrate::OLD_APP_NAME,
+                    to.display()
+                )
+            } else {
+                format!(
+                    "Your hosts and keys from {} were moved to {}. {passwords_failed} saved \
+                     password(s) could not be moved and will be asked for again.",
+                    crate::migrate::OLD_APP_NAME,
+                    to.display()
+                )
+            })),
+            Err(err) => Some(Notice::error(format!(
+                "Data from {} could not be moved ({err}). It is still in its old folder.",
+                crate::migrate::OLD_APP_NAME
+            ))),
+        };
         let store = Store::open_default();
         let (data, notice) = match store.load() {
-            Ok(data) => (data, None),
+            Ok(data) => (data, moved),
             Err(err) => {
                 // Keep a copy of the unreadable file before it gets overwritten.
                 let backup = store.path().map(|path| {
@@ -153,7 +197,7 @@ impl App {
                     ),
                     None => format!("Saved data could not be read ({err})."),
                 };
-                (Data::default(), Some(notice))
+                (Data::default(), Some(Notice::error(notice)))
             }
         };
         let theme = Theme::by_name(&data.settings.theme);
@@ -197,7 +241,7 @@ impl App {
 
     pub fn save(&mut self) {
         if let Err(err) = self.store.save(&self.data) {
-            self.notice = Some(format!("Could not save changes: {err}"));
+            self.notice = Some(Notice::error(format!("Could not save changes: {err}")));
         }
     }
 
@@ -208,7 +252,7 @@ impl App {
 
     /// Show a message in the bar at the top of the window.
     pub fn notify(&mut self, message: String) {
-        self.notice = Some(message);
+        self.notice = Some(Notice::error(message));
     }
 
     /// Open a terminal session to a saved host and switch to it.
@@ -219,7 +263,7 @@ impl App {
         let hops = match self.hops(host) {
             Ok(hops) => hops,
             Err(err) => {
-                self.notice = Some(err);
+                self.notice = Some(Notice::error(err));
                 return;
             }
         };
@@ -497,12 +541,21 @@ impl eframe::App for App {
                         .inner_margin(egui::Margin::symmetric(16, 8)),
                 )
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(notice).color(theme.danger));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("Dismiss").clicked() {
-                                self.notice = None;
-                            }
+                    // Button first, from the right, so a long message wraps
+                    // instead of pushing it off the window.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Dismiss").clicked() {
+                            self.notice = None;
+                        }
+                        let color = if notice.error {
+                            theme.danger
+                        } else {
+                            theme.text
+                        };
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.add(
+                                egui::Label::new(RichText::new(notice.text).color(color)).wrap(),
+                            );
                         });
                     });
                 });

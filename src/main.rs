@@ -1,12 +1,12 @@
 // Do not open a console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! The rterminalfy desktop app: windows, pages and themes. The work behind
+//! The termker desktop app: windows, pages and themes. The work behind
 //! them lives in the crates under `crates/`:
 //!
-//! - `rterminalfy-core`: saved hosts and settings, keychain, saved passwords
-//! - `rterminalfy-ssh`: SSH connections, jump hosts, port forwarding, SFTP
-//! - `rterminalfy-terminal`: terminal emulator and shell sessions
+//! - `termker-core`: saved hosts and settings, keychain, saved passwords
+//! - `termker-ssh`: SSH connections, jump hosts, port forwarding, SFTP
+//! - `termker-terminal`: terminal emulator and shell sessions
 
 mod app;
 mod libs;
@@ -14,11 +14,11 @@ mod theme;
 mod ui;
 
 // Short names for the library crates, used throughout the app.
-use rterminalfy_core::{keychain, model, secrets, store};
-use rterminalfy_ssh::{self as ssh, sftp};
-use rterminalfy_terminal::{emulator as terminal, session};
+use termker_core::{keychain, migrate, model, secrets, store};
+use termker_ssh::{self as ssh, sftp};
+use termker_terminal::{emulator as terminal, session};
 
-pub use rterminalfy_core::APP_NAME;
+pub use termker_core::APP_NAME;
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> eframe::Result {

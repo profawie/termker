@@ -1,6 +1,6 @@
 [package]
-name = "rterminalfy-core"
-description = "rterminalfy's saved data, keychain and saved passwords"
+name = "termker-core"
+description = "termker's saved data, keychain and saved passwords"
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [features]
-# Helpers for the tests of the other rterminalfy crates.
+# Helpers for the tests of the other termker crates.
 test-support = []
 
 [dependencies]
