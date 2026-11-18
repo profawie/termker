@@ -4,6 +4,7 @@
 pub mod keychain;
 pub mod migrate;
 pub mod model;
+pub mod os;
 pub mod secrets;
 pub mod store;
 pub mod time;

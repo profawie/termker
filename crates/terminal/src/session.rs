@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use termker_core::secrets::SecretStore;
 use termker_ssh::{
-    self as ssh, Hop, KnownHosts, Prompt, SessionCommand, SessionEvent, SessionHandle,
+    self as ssh, Hop, KnownHosts, Prompt, RemoteOs, SessionCommand, SessionEvent, SessionHandle,
 };
 
 use crate::emulator::{Emulator, Size};
@@ -33,6 +33,9 @@ pub struct Session {
     pub secret_input: String,
     /// Fraction of a line left over from smooth scrolling.
     pub scroll_remainder: f32,
+    /// What the host runs, once it has said so.
+    pub os: Option<RemoteOs>,
+    os_is_news: bool,
     handle: SessionHandle,
 }
 
@@ -65,6 +68,8 @@ impl Session {
             prompt: None,
             secret_input: String::new(),
             scroll_remainder: 0.0,
+            os: None,
+            os_is_news: false,
             handle,
         }
     }
@@ -115,12 +120,25 @@ impl Session {
                         self.handle.send(SessionCommand::Input(replies));
                     }
                 }
+                SessionEvent::RemoteOs(os) => {
+                    self.os = Some(os);
+                    self.os_is_news = true;
+                }
                 SessionEvent::Closed { error } => {
                     self.prompt = None;
                     self.secret_input.clear();
                     self.state = SessionState::Closed(error);
                 }
             }
+        }
+    }
+
+    /// The system the host reported, once, right after it was learned.
+    pub fn take_new_os(&mut self) -> Option<&RemoteOs> {
+        if std::mem::take(&mut self.os_is_news) {
+            self.os.as_ref()
+        } else {
+            None
         }
     }
 

@@ -3,6 +3,7 @@
 
 pub mod forward;
 pub mod known_hosts;
+pub mod os;
 pub mod sftp;
 pub mod socks;
 
@@ -16,6 +17,7 @@ use russh::{
 use tokio::sync::{mpsc, oneshot};
 
 pub use known_hosts::{HostKeyStatus, KnownHosts};
+pub use termker_core::os::{OsFamily, RemoteOs};
 pub use termker_core::secrets::SecretStore;
 use termker_core::{
     keychain::KeyStore,
@@ -599,6 +601,9 @@ pub enum SessionEvent {
     Prompt(Prompt),
     Connected,
     Output(Vec<u8>),
+    /// The host said which operating system it runs. Comes some time after
+    /// `Connected`, or never if the host does not say.
+    RemoteOs(RemoteOs),
     /// The session ended. `error` is `None` if it closed normally.
     Closed {
         error: Option<String>,
@@ -691,8 +696,20 @@ async fn run_shell(
     channel.request_shell(true).await?;
     emit(SessionEvent::Connected);
 
+    // Asked next to the shell, on a channel of its own, so the shell is
+    // usable at once and never sees the question.
+    let detect_os = os::detect(connection.target());
+    tokio::pin!(detect_os);
+    let mut os_asked = false;
+
     loop {
         tokio::select! {
+            remote_os = &mut detect_os, if !os_asked => {
+                os_asked = true;
+                if let Some(remote_os) = remote_os {
+                    emit(SessionEvent::RemoteOs(remote_os));
+                }
+            }
             command = commands.recv() => match command {
                 Some(SessionCommand::Input(bytes)) => channel.data_bytes(bytes).await?,
                 Some(SessionCommand::Resize { cols, rows }) => {

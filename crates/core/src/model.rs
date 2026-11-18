@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::os::RemoteOs;
+
 pub const DEFAULT_SSH_PORT: u16 = 22;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -25,6 +27,10 @@ pub struct Host {
     /// and `auth`.
     #[serde(default)]
     pub identity: Option<Uuid>,
+    /// The operating system the host reported the last time it was
+    /// connected to. Shown on its card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os: Option<RemoteOs>,
 }
 
 /// A named group of hosts on the Hosts page. Hosts refer to it by name
@@ -153,6 +159,7 @@ impl Host {
             jump_host: None,
             auth: AuthMethod::Password,
             identity: None,
+            os: None,
         }
     }
 
@@ -562,7 +569,16 @@ impl Data {
             .iter_mut()
             .find(|existing| existing.id == host.id)
         {
-            Some(existing) => *existing = host,
+            Some(existing) => {
+                // Only a connection changes what is known about the system;
+                // a form never does. A new address is a different machine.
+                host.os = if existing.address == host.address && existing.port == host.port {
+                    existing.os.take()
+                } else {
+                    None
+                };
+                *existing = host;
+            }
             None => self.hosts.push(host),
         }
         self.sync_groups();
@@ -803,6 +819,17 @@ impl Data {
         }
     }
 
+    /// Remember what `id` runs. Returns `true` if that is news.
+    pub fn set_host_os(&mut self, id: Uuid, os: &RemoteOs) -> bool {
+        match self.hosts.iter_mut().find(|host| host.id == id) {
+            Some(host) if host.os.as_ref() != Some(os) => {
+                host.os = Some(os.clone());
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Delete a host, its forwards, and jump host references to it.
     pub fn remove_host(&mut self, id: Uuid) {
         self.hosts.retain(|host| host.id != id);
@@ -866,6 +893,34 @@ mod tests {
         let text = serde_json::to_string(&old).unwrap();
         assert!(text.contains(r#""terminal_theme":"Amber""#));
         assert!(text.contains(r#""appearance":"dark""#));
+    }
+
+    #[test]
+    fn detected_system_survives_edits_but_not_a_new_address() {
+        let mut data = Data::default();
+        let web = host("web");
+        data.upsert_host(web.clone()).unwrap();
+        let os = crate::os::parse("TERMKER_UNAME=Linux 6.8.0\nNAME=Ubuntu\nID=ubuntu\n").unwrap();
+        assert!(data.set_host_os(web.id, &os));
+        assert!(!data.set_host_os(web.id, &os));
+        assert!(!data.set_host_os(Uuid::new_v4(), &os));
+
+        // The edit form still holds the host as it was before connecting.
+        let mut edited = web.clone();
+        edited.label = "web 1".into();
+        data.upsert_host(edited.clone()).unwrap();
+        assert_eq!(data.hosts[0].os, Some(os));
+
+        edited.address = "other.example.com".into();
+        data.upsert_host(edited).unwrap();
+        assert_eq!(data.hosts[0].os, None);
+
+        // Files written before this was known still load.
+        let old: Host = serde_json::from_str(
+            r#"{"id":"6f0d4f4e-6a43-4bd2-9a0b-0c3a51a0f001","label":"a","address":"b"}"#,
+        )
+        .unwrap();
+        assert_eq!(old.os, None);
     }
 
     #[test]

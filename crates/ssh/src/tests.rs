@@ -36,6 +36,10 @@ struct TestServer {
     /// Result of trying to open a forwarded-tcpip channel nobody asked for:
     /// `Some(true)` if the client accepted it.
     unsolicited_forward_accepted: Arc<Mutex<Option<bool>>>,
+    /// What a command run outside the shell prints. `None` refuses it.
+    exec_output: Option<&'static str>,
+    /// Every command a client ran outside the shell.
+    commands_run: Arc<Mutex<Vec<String>>>,
 }
 
 impl server::Server for TestServer {
@@ -144,6 +148,29 @@ impl server::Handler for TestServer {
                 .is_ok();
             *outcome.lock().unwrap() = Some(accepted);
         });
+        Ok(())
+    }
+
+    async fn exec_request(
+        &mut self,
+        channel: ChannelId,
+        command: &[u8],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.commands_run
+            .lock()
+            .unwrap()
+            .push(String::from_utf8_lossy(command).into_owned());
+        match self.exec_output {
+            Some(output) => {
+                session.channel_success(channel)?;
+                session.data(channel, output.as_bytes().to_vec())?;
+                session.exit_status_request(channel, 0)?;
+                session.eof(channel)?;
+                session.close(channel)?;
+            }
+            None => session.channel_failure(channel)?,
+        }
         Ok(())
     }
 
@@ -874,7 +901,7 @@ async fn shell_session_streams_output_input_and_resize() {
             Ok(SessionEvent::Connected) => connected = true,
             Ok(SessionEvent::Output(bytes)) => output.extend_from_slice(&bytes),
             Ok(SessionEvent::Closed { error }) => panic!("closed: {error:?}"),
-            Ok(SessionEvent::Status(_)) | Err(_) => {}
+            Ok(SessionEvent::Status(_) | SessionEvent::RemoteOs(_)) | Err(_) => {}
         }
         if connected && !sent && output.ends_with(b"ready\r\n") {
             session.send(SessionCommand::Resize {
@@ -887,6 +914,53 @@ async fn shell_session_streams_output_input_and_resize() {
         tokio::task::yield_now().await;
     }
     assert!(output.starts_with(b"ready\r\n"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_session_learns_the_system_of_the_target_behind_a_jump_host() {
+    let jump = TestServer {
+        exec_output: Some("TERMKER_UNAME=OpenBSD 7.6\n"),
+        ..TestServer::default()
+    };
+    let target = TestServer {
+        exec_output: Some(
+            "TERMKER_UNAME=Linux 6.8.0-45-generic\nNAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\nID=ubuntu\n",
+        ),
+        ..TestServer::default()
+    };
+    let jump_port = start(jump.clone()).await;
+    let target_port = start(target.clone()).await;
+    let answers = Answers::new(true, &[PASSWORD, PASSWORD]);
+    let session = spawn_shell(
+        &tokio::runtime::Handle::current(),
+        vec![hop("jump", jump_port), hop("target", target_port)],
+        known_hosts("shell-os"),
+        SecretStore::disabled(),
+        (80, 24),
+        || {},
+    );
+
+    let mut output = Vec::new();
+    let mut found = None;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while found.is_none() {
+        assert!(std::time::Instant::now() < deadline, "timed out");
+        match session.events.recv_timeout(Duration::from_millis(50)) {
+            Ok(SessionEvent::Prompt(prompt)) => answers.answer(prompt),
+            Ok(SessionEvent::Output(bytes)) => output.extend_from_slice(&bytes),
+            Ok(SessionEvent::RemoteOs(os)) => found = Some(os),
+            Ok(SessionEvent::Closed { error }) => panic!("closed: {error:?}"),
+            Ok(SessionEvent::Status(_) | SessionEvent::Connected) | Err(_) => {}
+        }
+        tokio::task::yield_now().await;
+    }
+    let os = found.unwrap();
+    assert_eq!(os.title(), "Ubuntu 24.04");
+    assert_eq!(os.family, OsFamily::Linux);
+    // Asked on the target only, and outside the terminal.
+    assert!(jump.commands_run.lock().unwrap().is_empty());
+    assert_eq!(target.commands_run.lock().unwrap().len(), 1);
+    assert!(!String::from_utf8_lossy(&output).contains("TERMKER"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

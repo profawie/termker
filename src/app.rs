@@ -615,8 +615,17 @@ impl eframe::App for App {
         let theme = self.theme;
 
         // Sessions keep receiving output while another page is shown.
+        let mut learned = false;
         for session in &mut self.sessions {
             session.poll();
+            // Kept with the host, so its card can show it from now on.
+            let host_id = session.host_id;
+            if let Some(os) = session.take_new_os() {
+                learned |= self.data.set_host_os(host_id, os);
+            }
+        }
+        if learned {
+            self.save();
         }
         for forward in &mut self.active_forwards {
             forward.poll();

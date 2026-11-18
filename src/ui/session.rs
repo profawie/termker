@@ -58,6 +58,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, index: usize) -> SessionAction {
                     );
                 }
                 ui.label(RichText::new(status).small().color(theme.text_dim));
+                if let (Some(os), true) = (&session.os, session.is_connected()) {
+                    ui.add_space(10.0);
+                    super::os::summary(ui, &theme, os);
+                }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let close = if session.is_closed() {
