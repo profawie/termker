@@ -1,13 +1,19 @@
-[package]
-name = "rterminalfy"
+[workspace]
+members = ["crates/*"]
+# Plain `cargo build`, `cargo test` and `cargo clippy` cover every crate.
+default-members = [".", "crates/*"]
+resolver = "3"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-description = "Desktop SSH client for individuals, written entirely in Rust"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/profawie/rterminalfy"
 rust-version = "1.92"
 
-[dependencies]
+# Every third-party library, in one place. The About screen lists exactly
+# these (see build.rs and src/libs.rs).
+[workspace.dependencies]
 alacritty_terminal = "0.26"
 directories = "6.0"
 eframe = "0.37"
@@ -20,6 +26,30 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "time", "io-util", "fs"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+
+# The app's own crates.
+rterminalfy-core = { path = "crates/core" }
+rterminalfy-ssh = { path = "crates/ssh" }
+rterminalfy-terminal = { path = "crates/terminal" }
+
+[package]
+name = "rterminalfy"
+description = "Desktop SSH client for individuals, written entirely in Rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+alacritty_terminal.workspace = true
+eframe.workspace = true
+rfd.workspace = true
+rterminalfy-core.workspace = true
+rterminalfy-ssh.workspace = true
+rterminalfy-terminal.workspace = true
+tokio.workspace = true
+uuid.workspace = true
 
 [profile.release]
 lto = "thin"

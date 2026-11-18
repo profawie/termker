@@ -188,16 +188,17 @@ impl Inner {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
+/// An in-memory credential store for tests.
+#[cfg(any(test, feature = "test-support"))]
+mod memory {
     use std::collections::BTreeMap;
 
     use super::*;
 
     /// In-memory stand-in for the credential store.
     #[derive(Default)]
-    struct MemoryBackend {
-        entries: Mutex<BTreeMap<String, String>>,
+    pub(crate) struct MemoryBackend {
+        pub(crate) entries: Mutex<BTreeMap<String, String>>,
     }
 
     impl Backend for Arc<MemoryBackend> {
@@ -219,11 +220,11 @@ pub(crate) mod tests {
 
     impl SecretStore {
         /// A working store that keeps everything in memory.
-        pub(crate) fn memory() -> Self {
+        pub fn memory() -> Self {
             Self::memory_with_index(None).0
         }
 
-        fn memory_with_index(index_path: Option<PathBuf>) -> (Self, Arc<MemoryBackend>) {
+        pub(crate) fn memory_with_index(index_path: Option<PathBuf>) -> (Self, Arc<MemoryBackend>) {
             let backend = Arc::new(MemoryBackend::default());
             let store = Self {
                 inner: Some(Arc::new(Inner {
@@ -235,6 +236,11 @@ pub(crate) mod tests {
             (store, backend)
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 
     #[test]
     fn save_get_and_forget() {
@@ -253,7 +259,7 @@ pub(crate) mod tests {
 
     #[test]
     fn index_file_holds_names_only() {
-        let path = crate::ssh::tests::temp_dir("secrets").join("secrets.json");
+        let path = crate::testing::temp_dir("secrets").join("secrets.json");
         let (store, _) = SecretStore::memory_with_index(Some(path.clone()));
         store
             .save("password:root@h:22", "Password for root@h", "hunter22")

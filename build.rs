@@ -31,17 +31,19 @@ fn main() {
     fs::write(dest, out).unwrap();
 }
 
-/// Name of every dependency in the `[dependencies]` section.
+/// Name of every third-party library. They are all declared once, in the
+/// workspace's `[workspace.dependencies]`; the app's own crates
+/// (`path = ...`) are left out.
 fn direct_dependencies(manifest: &str) -> Vec<String> {
     let mut names = Vec::new();
     let mut in_deps = false;
     for line in manifest.lines() {
         let line = line.trim();
         if line.starts_with('[') {
-            in_deps = line == "[dependencies]";
+            in_deps = line == "[workspace.dependencies]";
             continue;
         }
-        if !in_deps || line.is_empty() || line.starts_with('#') {
+        if !in_deps || line.is_empty() || line.starts_with('#') || line.contains("path =") {
             continue;
         }
         if let Some((name, _)) = line.split_once('=') {

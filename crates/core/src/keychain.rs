@@ -359,7 +359,7 @@ impl CertificateInfo {
             return "never".to_string();
         }
         let time = SystemTime::UNIX_EPOCH + Duration::from_secs(self.valid_before);
-        format!("{} UTC", crate::sftp::format_time(time))
+        format!("{} UTC", crate::time::format_time(time))
     }
 
     pub fn principals_text(&self) -> String {
@@ -400,7 +400,7 @@ mod tests {
     use super::*;
 
     fn store(name: &str) -> KeyStore {
-        KeyStore::new(crate::ssh::tests::temp_dir(name))
+        KeyStore::new(crate::testing::temp_dir(name))
     }
 
     fn read(store: &KeyStore, entry: &KeyEntry) -> PrivateKey {

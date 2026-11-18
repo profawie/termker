@@ -71,6 +71,12 @@ pub struct Identity {
     pub key: Option<Uuid>,
 }
 
+impl Default for Identity {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Identity {
     pub fn new() -> Self {
         Self {
@@ -84,6 +90,12 @@ impl Identity {
 
 fn default_port() -> u16 {
     DEFAULT_SSH_PORT
+}
+
+impl Default for Host {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Host {
@@ -134,7 +146,7 @@ pub struct Settings {
 }
 
 fn default_theme() -> String {
-    crate::theme::DEFAULT_THEME.to_string()
+    crate::DEFAULT_THEME.to_string()
 }
 
 fn default_font_size() -> f32 {

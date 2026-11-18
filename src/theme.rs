@@ -2,7 +2,7 @@
 
 use eframe::egui::{self, Color32, CornerRadius, Stroke};
 
-pub const DEFAULT_THEME: &str = "Phosphor";
+pub use rterminalfy_core::DEFAULT_THEME;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Theme {

@@ -70,6 +70,25 @@ Both also copy the program to the repository folder (`rterminalfy`,
 cargo test
 ```
 
+This runs the tests of every crate in the workspace.
+
+## Code layout
+
+The code is a Cargo workspace. It still builds into one program; the crates
+only keep the parts separate.
+
+| Crate | What it does |
+| --- | --- |
+| `rterminalfy` (`src/`) | The desktop app: windows, pages, themes, About screen |
+| `rterminalfy-core` (`crates/core`) | Saved hosts and settings, keychain keys and identities, saved passwords |
+| `rterminalfy-ssh` (`crates/ssh`) | SSH connections, host keys, jump hosts, port forwarding, SFTP |
+| `rterminalfy-terminal` (`crates/terminal`) | Terminal emulator and interactive shell sessions |
+
+Each crate only depends on the ones below it in this list: the app uses all
+three, `rterminalfy-terminal` uses `ssh` and `core`, and `rterminalfy-ssh`
+uses `core`. Third-party libraries are declared once, under
+`[workspace.dependencies]` in the root `Cargo.toml`.
+
 ## Data
 
 Hosts and settings are stored as JSON in the per-user config folder

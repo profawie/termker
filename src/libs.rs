@@ -2,7 +2,8 @@
 //!
 //! Versions come from `Cargo.lock` at build time (see `build.rs`). Purpose,
 //! website and license are maintained here. The tests below fail if a
-//! dependency in `Cargo.toml` is not listed. Cryptography crates that come
+//! library in `[workspace.dependencies]` of the root `Cargo.toml` is
+//! not listed. Cryptography crates that come
 //! in through `russh` are listed as well.
 
 include!(concat!(env!("OUT_DIR"), "/dependency_versions.rs"));
