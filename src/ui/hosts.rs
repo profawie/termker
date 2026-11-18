@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::{
     app::App,
-    model::{Data, Host},
+    model::{AuthMethod, Data, Host},
 };
 
 const CARD_INNER_WIDTH: f32 = 240.0;
@@ -86,6 +86,7 @@ impl HostsPage {
         }
 
         let mut edit: Option<Uuid> = None;
+        let mut connect: Option<Uuid> = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
             // Named groups first, ungrouped hosts last.
             let ordered = groups
@@ -112,8 +113,10 @@ impl HostsPage {
                                 .editor
                                 .as_ref()
                                 .is_some_and(|editor| editor.draft.id == host.id);
-                            if host_card(ui, app, host, selected) {
-                                edit = Some(host.id);
+                            match host_card(ui, app, host, selected) {
+                                CardAction::Edit => edit = Some(host.id),
+                                CardAction::Connect => connect = Some(host.id),
+                                CardAction::None => {}
                             }
                         }
                     });
@@ -123,6 +126,10 @@ impl HostsPage {
         });
         if let Some(host) = edit.and_then(|id| app.data.host(id)) {
             self.editor = Some(Editor::from_host(host.clone(), false));
+        }
+        if let Some(id) = connect {
+            self.editor = None;
+            app.connect(ui.ctx(), id);
         }
     }
 
@@ -181,13 +188,14 @@ impl HostsPage {
                     "example.com or 10.0.0.5",
                 );
                 field(ui, "Port", &mut editor.port, "22");
-                field(ui, "Username", &mut editor.draft.username, "root");
                 field(
                     ui,
                     "Group",
                     &mut editor.draft.group,
                     "Optional, e.g. Production",
                 );
+
+                sign_in_fields(ui, app, &mut editor.draft);
 
                 ui.label(RichText::new("Jump host").small().color(theme.text_dim));
                 let current = editor
@@ -306,24 +314,140 @@ impl HostsPage {
     }
 }
 
-fn field(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {
-    let dim = ui.visuals().weak_text_color();
-    ui.label(RichText::new(label).small().color(dim));
-    ui.add(
-        egui::TextEdit::singleline(value)
-            .hint_text(hint)
-            .desired_width(f32::INFINITY),
-    );
+use super::field;
+
+/// Which sign-in choice is selected in the editor.
+#[derive(Clone, Copy, PartialEq)]
+enum SignIn {
+    Password,
+    KeychainKey,
+    KeyFile,
 }
 
-/// One host card. Returns `true` if the user wants to edit it.
-fn host_card(ui: &mut egui::Ui, app: &App, host: &Host, selected: bool) -> bool {
+/// Identity picker, and the username and sign-in method used without one.
+fn sign_in_fields(ui: &mut egui::Ui, app: &App, draft: &mut Host) {
+    let theme = app.theme;
+    let small = |text: &str| RichText::new(text).small().color(theme.text_dim);
+
+    if !app.data.identities.is_empty() {
+        ui.label(small("Identity"));
+        let current = draft
+            .identity
+            .and_then(|id| app.data.identity(id))
+            .map(|identity| identity.name.clone())
+            .unwrap_or_else(|| "None (enter details below)".to_string());
+        egui::ComboBox::from_id_salt("host_identity")
+            .selected_text(current)
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut draft.identity, None, "None (enter details below)");
+                for identity in &app.data.identities {
+                    ui.selectable_value(&mut draft.identity, Some(identity.id), &identity.name);
+                }
+            });
+    }
+    if let Some(identity) = draft.identity.and_then(|id| app.data.identity(id)) {
+        let sign_in = match identity.key.and_then(|id| app.data.key(id)) {
+            Some(key) => format!("key \"{}\"", key.name),
+            None => "a password".to_string(),
+        };
+        ui.label(small(&format!(
+            "Signs in as {} with {sign_in}. Change it in Keychain.",
+            identity.username
+        )));
+        return;
+    }
+
+    field(ui, "Username", &mut draft.username, "root");
+    ui.label(small("Sign in with"));
+    let selected = match draft.auth {
+        AuthMethod::Password => SignIn::Password,
+        AuthMethod::Key { .. } => SignIn::KeychainKey,
+        AuthMethod::KeyFile { .. } => SignIn::KeyFile,
+    };
+    ui.horizontal(|ui| {
+        if ui
+            .selectable_label(selected == SignIn::Password, "Password")
+            .clicked()
+        {
+            draft.auth = AuthMethod::Password;
+        }
+        if ui
+            .selectable_label(selected == SignIn::KeychainKey, "Keychain key")
+            .clicked()
+            && selected != SignIn::KeychainKey
+        {
+            // Start on the first key; with none, the note below explains.
+            draft.auth = AuthMethod::Key {
+                key: app
+                    .data
+                    .keys
+                    .first()
+                    .map(|key| key.id)
+                    .unwrap_or_else(Uuid::nil),
+            };
+        }
+        if ui
+            .selectable_label(selected == SignIn::KeyFile, "Key file")
+            .clicked()
+            && selected != SignIn::KeyFile
+        {
+            draft.auth = AuthMethod::KeyFile {
+                path: String::new(),
+            };
+        }
+    });
+    match &mut draft.auth {
+        AuthMethod::Password => {
+            ui.label(small(
+                "You are asked for the password when connecting. It is not saved.",
+            ));
+        }
+        AuthMethod::Key { key } => {
+            if app.data.keys.is_empty() {
+                ui.label(small(
+                    "The keychain has no keys yet. Generate or import one on the Keychain page.",
+                ));
+            } else {
+                let current = app
+                    .data
+                    .key(*key)
+                    .map(|entry| entry.name.clone())
+                    .unwrap_or_else(|| "Choose a key".to_string());
+                egui::ComboBox::from_id_salt("host_key")
+                    .selected_text(current)
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        for entry in &app.data.keys {
+                            ui.selectable_value(
+                                key,
+                                entry.id,
+                                format!("{}  ({})", entry.name, entry.algorithm),
+                            );
+                        }
+                    });
+            }
+        }
+        AuthMethod::KeyFile { path } => {
+            field(ui, "Key file", path, "~/.ssh/id_ed25519");
+        }
+    }
+}
+
+enum CardAction {
+    None,
+    Edit,
+    Connect,
+}
+
+/// One host card, with its Connect and Edit buttons.
+fn host_card(ui: &mut egui::Ui, app: &App, host: &Host, selected: bool) -> CardAction {
     let theme = app.theme;
     let mut frame = super::card(&theme);
     if selected {
         frame = frame.stroke(egui::Stroke::new(1.5, theme.accent));
     }
-    let mut edit = false;
+    let mut action = CardAction::None;
     frame.show(ui, |ui| {
         ui.set_width(CARD_INNER_WIDTH);
         ui.vertical(|ui| {
@@ -332,7 +456,7 @@ fn host_card(ui: &mut egui::Ui, app: &App, host: &Host, selected: bool) -> bool 
             );
             ui.add(
                 egui::Label::new(
-                    RichText::new(host.target())
+                    RichText::new(app.data.target(host))
                         .monospace()
                         .small()
                         .color(theme.text_dim),
@@ -350,13 +474,19 @@ fn host_card(ui: &mut egui::Ui, app: &App, host: &Host, selected: bool) -> bool 
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("Edit").clicked() {
-                        edit = true;
+                        action = CardAction::Edit;
                     }
                 });
             });
+            ui.add_space(2.0);
+            let connect = super::primary_button(&theme, "Connect")
+                .min_size(egui::vec2(ui.available_width(), 28.0));
+            if ui.add(connect).clicked() {
+                action = CardAction::Connect;
+            }
         });
     });
-    edit
+    action
 }
 
 /// Hosts matching the search, grouped and sorted by name.

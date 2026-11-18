@@ -2,9 +2,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod keychain;
 mod libs;
 mod model;
+mod session;
+mod sftp;
+mod ssh;
 mod store;
+mod terminal;
 mod theme;
 mod ui;
 
