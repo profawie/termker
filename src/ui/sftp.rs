@@ -1,6 +1,6 @@
 //! SFTP page: two file panes side by side. Each pane shows this computer or
-//! one of the hosts, and every file and folder has a Transfer button that
-//! copies it to the folder open in the other pane.
+//! one of the hosts. Dragging a file or folder from one pane and dropping it
+//! on the other copies it to the folder open there.
 
 use std::path::{Path, PathBuf};
 
@@ -28,6 +28,14 @@ pub struct SftpPage {
     next_id: u64,
     /// A transfer waiting for the user to agree to replace what is there.
     replace: Option<Replace>,
+}
+
+/// A file or folder being dragged from one pane to the other.
+#[derive(Clone)]
+struct Dragged {
+    /// Pane it comes from.
+    from: usize,
+    entry: Entry,
 }
 
 struct Replace {
@@ -124,13 +132,6 @@ enum PaneAction {
     Show(Choice),
     Close,
     Transfer(Entry),
-}
-
-/// The other pane, as far as a pane needs to know it to offer transfers.
-struct Target {
-    title: String,
-    /// `None` while the other pane has no folder open.
-    location: Option<Location>,
 }
 
 impl Pane {
@@ -406,21 +407,13 @@ impl SftpPage {
             ui,
             &theme,
             "SFTP",
-            "Copy files between this computer and your hosts, or straight from one host to another.",
+            "Drag a file or folder from one pane and drop it on the other to copy it: computer to host, host to computer, or host to host.",
         );
 
         self.replace_card(app, ui);
 
-        let targets: Vec<Target> = self
-            .panes
-            .iter()
-            .rev()
-            .map(|other| Target {
-                title: other.title(),
-                location: other.location(),
-            })
-            .collect();
         let mut actions: [Option<PaneAction>; 2] = [None, None];
+        let mut rects = [egui::Rect::NOTHING; 2];
         // The panes take the height left above the list of transfers.
         let rows = self.transfers.len().min(TRANSFER_ROWS_SHOWN) as f32;
         let reserved = if self.transfers.is_empty() {
@@ -436,13 +429,50 @@ impl SftpPage {
             ui.columns(2, |columns| {
                 for (index, column) in columns.iter_mut().enumerate() {
                     column.push_id(index, |ui| {
-                        actions[index] =
-                            pane_ui(ui, app, &mut self.panes[index], index, &targets[index]);
+                        let (action, rect) = pane_ui(ui, app, &mut self.panes[index], index);
+                        actions[index] = action;
+                        rects[index] = rect;
                     });
                 }
             });
         });
         transfers_list(ui, &theme, &mut self.transfers);
+
+        // A row dragged out of one pane is copied where it is dropped on
+        // the other.
+        if let Some(dragged) = egui::DragAndDrop::payload::<Dragged>(ui.ctx()) {
+            let to = 1 - dragged.from;
+            let blocked = self.blocked(dragged.from);
+            let over = ui
+                .ctx()
+                .pointer_latest_pos()
+                .is_some_and(|pointer| rects[to].contains(pointer));
+            let hint = match blocked {
+                Some(reason) => reason.to_string(),
+                None => format!(
+                    "Drop to copy to {} on {}",
+                    self.panes[to].path,
+                    self.panes[to].title()
+                ),
+            };
+            if blocked.is_none() {
+                super::drop_outline(ui, &theme, rects[to], over);
+            }
+            super::drag_chip(
+                ui.ctx(),
+                &theme,
+                &dragged.entry.name,
+                if over || blocked.is_some() {
+                    &hint
+                } else {
+                    "Drop on the other pane to copy"
+                },
+                over && blocked.is_none(),
+            );
+            if over && blocked.is_none() && ui.input(|input| input.pointer.any_released()) {
+                actions[dragged.from] = Some(PaneAction::Transfer(dragged.entry.clone()));
+            }
+        }
 
         for (index, action) in actions.into_iter().enumerate() {
             match action {
@@ -491,6 +521,18 @@ impl SftpPage {
             })),
             ..Pane::default()
         };
+    }
+
+    /// Why nothing can be copied out of pane `from` right now, if so.
+    fn blocked(&self, from: usize) -> Option<&'static str> {
+        let (source, destination) = (&self.panes[from], &self.panes[1 - from]);
+        match destination.location() {
+            None => Some("Open a folder in the other pane first"),
+            Some(location) if Some(&location) == source.location().as_ref() => {
+                Some("Both panes show the same folder")
+            }
+            Some(_) => None,
+        }
     }
 
     /// Copy `entry` from pane `from` into the folder open in the other pane.
@@ -603,11 +645,10 @@ fn pane_ui(
     app: &App,
     pane: &mut Pane,
     index: usize,
-    target: &Target,
-) -> Option<PaneAction> {
+) -> (Option<PaneAction>, egui::Rect) {
     let theme = app.theme;
     let mut action = None;
-    super::card(&theme).show(ui, |ui| {
+    let card = super::card(&theme).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.set_min_height(ui.available_height());
 
@@ -701,11 +742,9 @@ fn pane_ui(
         if let Some(error) = &pane.error {
             ui.add(egui::Label::new(RichText::new(error).color(theme.danger)).wrap());
         }
-        if let Some(entry) = file_list(ui, &theme, pane, index, target) {
-            action = Some(PaneAction::Transfer(entry));
-        }
+        file_list(ui, &theme, pane, index);
     });
-    action
+    (action, card.response.rect)
 }
 
 /// List of places for a pane that shows nothing yet.
@@ -885,49 +924,32 @@ fn name_form(ui: &mut egui::Ui, theme: &Theme, name: &mut String, confirm: &str)
     result
 }
 
-/// The files in a pane. Returns the entry whose Transfer button was clicked.
-fn file_list(
-    ui: &mut egui::Ui,
-    theme: &Theme,
-    pane: &mut Pane,
-    index: usize,
-    target: &Target,
-) -> Option<Entry> {
+/// The files in a pane. Rows can be dragged to the other pane.
+fn file_list(ui: &mut egui::Ui, theme: &Theme, pane: &mut Pane, index: usize) {
     if pane.loading {
         ui.label(RichText::new("Loading...").color(theme.text_dim));
-        return None;
+        return;
     }
     if pane.entries.is_empty() {
         ui.add_space(24.0);
         ui.vertical_centered(|ui| {
             ui.label(RichText::new("This folder is empty").color(theme.text_dim));
+            ui.label(
+                RichText::new("Drag files or folders here from the other pane.")
+                    .small()
+                    .color(theme.text_dim),
+            );
         });
-        return None;
+        return;
     }
 
     enum Action {
         Open(String),
-        Transfer(Entry),
         Rename(String),
         Delete(Entry),
     }
     let mut action = None;
 
-    // Why transfers are off, if they are.
-    let blocked = match &target.location {
-        None => Some("Open a folder in the other pane to transfer into it."),
-        Some(_) if pane.path.is_empty() => Some("Open a drive first."),
-        Some(location) if Some(location) == pane.location().as_ref() => {
-            Some("Both panes show the same folder.")
-        }
-        Some(_) => None,
-    };
-    // The arrow points at the other pane.
-    let transfer_label = if index == 0 {
-        "Transfer >"
-    } else {
-        "< Transfer"
-    };
     // The date only fits in a wide pane; it is always in the tooltip.
     let show_modified = ui.available_width() > 520.0;
     let drives = pane.path.is_empty();
@@ -935,10 +957,25 @@ fn file_list(
     egui::ScrollArea::vertical()
         .auto_shrink(false)
         .show(ui, |ui| {
+            // Dragging over a name moves the row instead of selecting text.
+            ui.style_mut().interaction.selectable_labels = false;
             for entry in &pane.entries {
                 let is_dir = entry.kind == EntryKind::Dir;
                 let modified = entry.modified.map(sftp::format_time).unwrap_or_default();
-                ui.horizontal(|ui| {
+                // The whole row can be picked up and dropped on the other
+                // pane. Drives and special files cannot be copied.
+                let draggable = !drives && entry.kind != EntryKind::Other;
+                let drag_id = ui.scope_id().with(("drag", &entry.name));
+                if draggable && super::drag_area(ui, drag_id) {
+                    egui::DragAndDrop::set_payload(
+                        ui.ctx(),
+                        Dragged {
+                            from: index,
+                            entry: entry.clone(),
+                        },
+                    );
+                }
+                let row = ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(10.0);
@@ -959,34 +996,6 @@ fn file_list(
                             .response
                             .on_hover_text("Rename or delete");
                         }
-                        let can_transfer = entry.kind != EntryKind::Other;
-                        let button = ui.add_enabled(
-                            blocked.is_none() && can_transfer,
-                            egui::Button::new(
-                                RichText::new(transfer_label)
-                                    .small()
-                                    .color(theme.on_accent)
-                                    .strong(),
-                            )
-                            .fill(theme.accent),
-                        );
-                        let hint = match (blocked, &target.location) {
-                            (Some(reason), _) => reason.to_string(),
-                            (None, _) if !can_transfer => {
-                                "Only files and folders can be transferred.".to_string()
-                            }
-                            (None, Some(location)) => {
-                                format!("Copy to {} on {}", location.path, target.title)
-                            }
-                            (None, None) => String::new(),
-                        };
-                        if button
-                            .on_hover_text(&hint)
-                            .on_disabled_hover_text(&hint)
-                            .clicked()
-                        {
-                            action = Some(Action::Transfer(entry.clone()));
-                        }
                         if show_modified {
                             fixed(ui, 118.0, &modified, theme);
                         }
@@ -998,17 +1007,7 @@ fn file_list(
                         fixed(ui, 62.0, &size, theme);
 
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            let marker = match entry.kind {
-                                EntryKind::Dir => "[dir] ",
-                                EntryKind::Symlink => "[link]",
-                                _ => "      ",
-                            };
-                            ui.label(
-                                RichText::new(marker)
-                                    .monospace()
-                                    .small()
-                                    .color(theme.text_dim),
-                            );
+                            icon(ui, theme, entry.kind);
                             let mut details = entry.name.clone();
                             if !modified.is_empty() {
                                 details.push_str(&format!("\nModified {modified} UTC"));
@@ -1038,12 +1037,14 @@ fn file_list(
                         });
                     });
                 });
+                if draggable {
+                    super::drag_area_drawn(ui, drag_id, row.response.rect);
+                }
             }
         });
 
     match action {
         Some(Action::Open(name)) => pane.open(pane.child(&name)),
-        Some(Action::Transfer(entry)) => return Some(entry),
         Some(Action::Rename(name)) => {
             pane.dialog = Some(Dialog::Rename {
                 from: name.clone(),
@@ -1053,7 +1054,64 @@ fn file_list(
         Some(Action::Delete(entry)) => pane.dialog = Some(Dialog::Delete(entry)),
         None => {}
     }
-    None
+}
+
+/// Small picture for a folder, a file or a link.
+fn icon(ui: &mut egui::Ui, theme: &Theme, kind: EntryKind) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+    let painter = ui.painter();
+    let c = rect.center();
+    match kind {
+        EntryKind::Dir => {
+            let color = theme.accent_text;
+            // Tab, then the body.
+            painter.rect_filled(
+                egui::Rect::from_min_max(c + egui::vec2(-8.0, -6.5), c + egui::vec2(-1.0, -2.0)),
+                1.5,
+                color,
+            );
+            painter.rect_filled(
+                egui::Rect::from_min_max(c + egui::vec2(-8.0, -4.0), c + egui::vec2(8.0, 6.5)),
+                2.0,
+                color,
+            );
+        }
+        _ => {
+            // A sheet of paper with a folded corner.
+            let stroke = egui::Stroke::new(1.2, theme.text_dim);
+            let (left, right, top, bottom, fold) = (-5.5, 5.5, -7.5, 7.5, 4.0);
+            let outline = vec![
+                c + egui::vec2(left, top),
+                c + egui::vec2(right - fold, top),
+                c + egui::vec2(right, top + fold),
+                c + egui::vec2(right, bottom),
+                c + egui::vec2(left, bottom),
+            ];
+            painter.add(egui::Shape::closed_line(outline, stroke));
+            painter.line_segment(
+                [
+                    c + egui::vec2(right - fold, top),
+                    c + egui::vec2(right - fold, top + fold),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    c + egui::vec2(right - fold, top + fold),
+                    c + egui::vec2(right, top + fold),
+                ],
+                stroke,
+            );
+            if kind == EntryKind::Symlink {
+                // An arrow: this is a link to something else.
+                let arrow = egui::Stroke::new(1.5, theme.accent_text);
+                let (from, to) = (c + egui::vec2(-3.0, 4.5), c + egui::vec2(2.5, -1.0));
+                painter.line_segment([from, to], arrow);
+                painter.line_segment([to, to + egui::vec2(-4.0, 0.0)], arrow);
+                painter.line_segment([to, to + egui::vec2(0.0, 4.0)], arrow);
+            }
+        }
+    }
 }
 
 /// Dim text in a column of fixed width, so rows line up.

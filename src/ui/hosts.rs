@@ -50,6 +50,15 @@ fn shown(group: &str) -> String {
     group.replace(model::GROUP_SEPARATOR, " > ")
 }
 
+/// A host card being dragged to another group.
+#[derive(Clone)]
+struct DraggedHost {
+    id: Uuid,
+    name: String,
+    /// Group it is in now.
+    group: String,
+}
+
 /// What the user asked for on a group's header row.
 enum GroupAction {
     Toggle(String, bool),
@@ -105,7 +114,12 @@ impl HostsPage {
         let theme = app.theme;
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                super::page_header(ui, &theme, "Hosts", "Servers you connect to over SSH.");
+                super::page_header(
+                    ui,
+                    &theme,
+                    "Hosts",
+                    "Servers you connect to over SSH. Drag a host onto a group to move it.",
+                );
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                 if ui
@@ -145,16 +159,49 @@ impl HostsPage {
         let mut edit: Option<Uuid> = None;
         let mut connect: Option<Uuid> = None;
         let mut group_action: Option<GroupAction> = None;
+        // A host card dragged onto a group moves there when dropped.
+        let dragged = egui::DragAndDrop::payload::<DraggedHost>(ui.ctx());
+        let pointer = ui.ctx().pointer_latest_pos();
+        let released = ui.input(|input| input.pointer.any_released());
+        let mut over_group: Option<String> = None;
+        let mut moved: Option<(Uuid, String)> = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
             // Leave room for the scroll bar next to the group buttons.
             ui.set_width(ui.available_width() - 12.0);
+            ui.add_space(4.0);
+            // Mark the area from `top` to here as a place to drop the
+            // dragged host, unless it is the group the host is already in.
+            let mut drop_zone = |ui: &mut egui::Ui, top: f32, indent: f32, group: &str| {
+                let Some(dragged) = &dragged else {
+                    return;
+                };
+                if dragged.group == group {
+                    return;
+                }
+                let rect = egui::Rect::from_min_max(
+                    egui::pos2(ui.max_rect().left() + indent - 6.0, top - 3.0),
+                    egui::pos2(ui.max_rect().right(), ui.cursor().top() - 5.0),
+                );
+                let over = pointer.is_some_and(|pointer| {
+                    rect.contains(pointer) && ui.clip_rect().contains(pointer)
+                });
+                super::drop_outline(ui, &theme, rect, over);
+                if over {
+                    over_group = Some(group.to_string());
+                    if released {
+                        moved = Some((dragged.id, group.to_string()));
+                    }
+                }
+            };
             for section in &sections {
                 let indent = section.depth as f32 * INDENT;
+                let top = ui.cursor().top();
                 if let Some(action) = group_header(ui, app, section, indent) {
                     group_action = Some(action);
                 }
                 if section.collapsed {
                     ui.add_space(6.0);
+                    drop_zone(ui, top, indent, section.name);
                     continue;
                 }
                 if section.hosts.is_empty() && section.total == 0 && !section.has_groups {
@@ -191,10 +238,48 @@ impl HostsPage {
                         }
                     });
                 }
-                ui.add_space(if section.hosts.is_empty() { 2.0 } else { 12.0 });
+                ui.add_space(if section.hosts.is_empty() { 6.0 } else { 12.0 });
+                drop_zone(ui, top, indent, section.name);
+            }
+            // With every host in a group there is no Ungrouped section to
+            // drop on, so offer one while dragging.
+            if dragged.is_some() && sections.iter().all(|section| !section.name.is_empty()) {
+                let top = ui.cursor().top();
+                ui.label(
+                    RichText::new("Ungrouped")
+                        .size(15.0)
+                        .strong()
+                        .color(theme.text_dim),
+                );
+                ui.label(
+                    RichText::new("Drop here to take the host out of its group.")
+                        .small()
+                        .color(theme.text_dim),
+                );
+                ui.add_space(8.0);
+                drop_zone(ui, top, 0.0, "");
             }
         });
+        if let Some(dragged) = &dragged {
+            let hint = match &over_group {
+                Some(group) if group.is_empty() => "Move out of its group".to_string(),
+                Some(group) => format!("Move to {}", shown(group)),
+                None => "Drop on a group to move".to_string(),
+            };
+            super::drag_chip(ui.ctx(), &theme, &dragged.name, &hint, over_group.is_some());
+        }
         drop(sections);
+        if let Some((id, group)) = moved {
+            app.data.move_host(id, &group);
+            // Show where it went.
+            app.data.set_group_collapsed(&group, false);
+            if let Some(editor) = &mut self.editor
+                && editor.draft.id == id
+            {
+                editor.draft.group = group;
+            }
+            app.save();
+        }
         match group_action {
             Some(GroupAction::Toggle(name, collapsed)) => {
                 app.data.set_group_collapsed(&name, collapsed);
@@ -667,7 +752,21 @@ fn host_card(ui: &mut egui::Ui, app: &App, host: &Host, selected: bool) -> CardA
         frame = frame.stroke(egui::Stroke::new(1.5, theme.accent_text));
     }
     let mut action = CardAction::None;
-    frame.show(ui, |ui| {
+    // The card can be picked up anywhere and dropped on another group.
+    let drag_id = ui.scope_id().with(("drag", host.id));
+    if super::drag_area(ui, drag_id) {
+        egui::DragAndDrop::set_payload(
+            ui.ctx(),
+            DraggedHost {
+                id: host.id,
+                name: host.display_name().to_string(),
+                group: host.group.clone(),
+            },
+        );
+    }
+    let card = frame.show(ui, |ui| {
+        // Dragging over the text moves the card instead of selecting it.
+        ui.style_mut().interaction.selectable_labels = false;
         ui.set_width(CARD_INNER_WIDTH);
         ui.vertical(|ui| {
             ui.add(
@@ -705,6 +804,7 @@ fn host_card(ui: &mut egui::Ui, app: &App, host: &Host, selected: bool) -> CardA
             }
         });
     });
+    super::drag_area_drawn(ui, drag_id, card.response.rect);
     action
 }
 
