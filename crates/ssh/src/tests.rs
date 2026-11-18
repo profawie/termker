@@ -259,11 +259,7 @@ pub(crate) fn hop(name: &str, port: u16) -> Hop {
     }
 }
 
-pub(crate) fn temp_dir(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rterminalfy-ssh-{}-{name}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
+pub(crate) use rterminalfy_core::testing::temp_dir;
 
 pub(crate) fn known_hosts(name: &str) -> KnownHosts {
     KnownHosts::new(temp_dir(name).join("known_hosts"))
@@ -473,11 +469,16 @@ async fn target_is_reached_through_the_jump_host() {
 }
 
 /// A keychain with one generated key, used by a host through an identity.
-fn keychain_fixture(name: &str, port: u16) -> (crate::model::Data, Host, KeyStore) {
-    use crate::model::{Data, Identity};
+fn keychain_fixture(name: &str, port: u16) -> (rterminalfy_core::model::Data, Host, KeyStore) {
+    use rterminalfy_core::model::{Data, Identity};
     let store = KeyStore::new(temp_dir(name).join("keys"));
-    let entry =
-        crate::keychain::generate(&store, crate::keychain::KeyKind::Ed25519, "laptop", "").unwrap();
+    let entry = rterminalfy_core::keychain::generate(
+        &store,
+        rterminalfy_core::keychain::KeyKind::Ed25519,
+        "laptop",
+        "",
+    )
+    .unwrap();
     let identity = Identity {
         name: "Alice".into(),
         username: "alice".into(),
@@ -560,7 +561,7 @@ async fn certificate_is_presented_and_plain_key_is_the_fallback() {
     let answers = Answers::new(true, &[]);
 
     data.keys[0].certificate =
-        Some(crate::keychain::check_certificate(&sign("alice"), &data.keys[0]).unwrap());
+        Some(rterminalfy_core::keychain::check_certificate(&sign("alice"), &data.keys[0]).unwrap());
     let connection = connect(
         &hops(&data, &host, &store).unwrap(),
         &known,
@@ -609,7 +610,7 @@ async fn remembered_password_is_reused_and_dropped_when_it_stops_working() {
     let known = known_hosts("saved-password");
     let hops = [hop("a", port)];
     let secrets = SecretStore::memory();
-    let key = crate::secrets::password_key("tester", "127.0.0.1", port);
+    let key = rterminalfy_core::secrets::password_key("tester", "127.0.0.1", port);
 
     // Without the tick box nothing is saved.
     let mut answers = Answers::new(true, &[PASSWORD]);
@@ -666,7 +667,7 @@ async fn saved_password_is_not_sent_to_a_host_whose_key_changed() {
 
     // A password is saved for this address, but the key on record for it
     // belongs to a different server.
-    let key = crate::secrets::password_key("tester", "127.0.0.1", port);
+    let key = rterminalfy_core::secrets::password_key("tester", "127.0.0.1", port);
     secrets.save(&key, "saved", PASSWORD).unwrap();
     let other = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
     known.trust("127.0.0.1", port, other.public_key()).unwrap();
@@ -731,7 +732,7 @@ fn hops_report_a_key_that_left_the_keychain() {
     let (mut data, mut host, store) = keychain_fixture("identity-missing", 22);
     let key = data.keys.remove(0).id;
     host.identity = None;
-    host.auth = crate::model::AuthMethod::Key { key };
+    host.auth = rterminalfy_core::model::AuthMethod::Key { key };
     let error = hops(&data, &host, &store).unwrap_err();
     assert_eq!(error, "The key for a is no longer in the keychain.");
 }
@@ -888,7 +889,7 @@ mod forwarding {
     use tokio::net::TcpStream;
 
     use super::*;
-    use crate::ssh::forward::{ForwardEvent, ForwardHandle, ForwardSpec, spawn_forward};
+    use crate::forward::{ForwardEvent, ForwardHandle, ForwardSpec, spawn_forward};
 
     /// TCP server that sends back whatever it receives. Returns its port.
     async fn echo_server() -> u16 {

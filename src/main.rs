@@ -1,20 +1,24 @@
 // Do not open a console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+//! The rterminalfy desktop app: windows, pages and themes. The work behind
+//! them lives in the crates under `crates/`:
+//!
+//! - `rterminalfy-core`: saved hosts and settings, keychain, saved passwords
+//! - `rterminalfy-ssh`: SSH connections, jump hosts, port forwarding, SFTP
+//! - `rterminalfy-terminal`: terminal emulator and shell sessions
+
 mod app;
-mod keychain;
 mod libs;
-mod model;
-mod secrets;
-mod session;
-mod sftp;
-mod ssh;
-mod store;
-mod terminal;
 mod theme;
 mod ui;
 
-pub const APP_NAME: &str = "rterminalfy";
+// Short names for the library crates, used throughout the app.
+use rterminalfy_core::{keychain, model, secrets, store};
+use rterminalfy_ssh::{self as ssh, sftp};
+use rterminalfy_terminal::{emulator as terminal, session};
+
+pub use rterminalfy_core::APP_NAME;
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> eframe::Result {
