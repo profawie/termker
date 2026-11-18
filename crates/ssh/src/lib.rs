@@ -110,6 +110,14 @@ pub enum SshError {
     AuthFailed {
         hop: String,
     },
+    /// The jump host `via` would not open the tunnel to the next hop.
+    JumpRefused {
+        via: String,
+        hop: String,
+        address: String,
+        port: u16,
+        reason: russh::ChannelOpenFailure,
+    },
     /// A port forward could not be set up; the text says why.
     Forward(String),
     /// An SFTP session could not be set up or was lost; the text says why.
@@ -131,6 +139,35 @@ impl fmt::Display for SshError {
             }
             Self::Key { path, reason } => write!(f, "Could not use key {path}: {reason}"),
             Self::AuthFailed { hop } => write!(f, "{hop} rejected the login."),
+            Self::JumpRefused {
+                via,
+                hop,
+                address,
+                port,
+                reason,
+            } => {
+                use russh::ChannelOpenFailure as Reason;
+                match reason {
+                    Reason::ConnectFailed => write!(
+                        f,
+                        "{via} could not reach {hop} at {address}:{port}. The jump host \
+                         connects to this address itself, so it must be an address and port \
+                         that work from {via}. Host aliases from ~/.ssh/config on {via} are \
+                         not used."
+                    ),
+                    Reason::AdministrativelyProhibited => write!(
+                        f,
+                        "{via} does not allow connections through it to {address}:{port}. \
+                         Check AllowTcpForwarding and PermitOpen in the SSH server settings \
+                         on {via}."
+                    ),
+                    _ => write!(
+                        f,
+                        "{via} could not open a connection to {hop} at {address}:{port} \
+                         ({reason:?})."
+                    ),
+                }
+            }
             Self::Forward(reason) | Self::Sftp(reason) => write!(f, "{reason}"),
             Self::Cancelled => write!(f, "Cancelled."),
         }
@@ -398,7 +435,17 @@ pub async fn connect_with(
                     ),
                 )
                 .await
-                .map_err(|_| timeout())??;
+                .map_err(|_| timeout())?
+                .map_err(|err| match err {
+                    russh::Error::ChannelOpenFailure(reason) => SshError::JumpRefused {
+                        via: hops[index - 1].name.clone(),
+                        hop: hop.name.clone(),
+                        address: hop.address.clone(),
+                        port: hop.port,
+                        reason,
+                    },
+                    err => err.into(),
+                })?;
                 client::connect_stream(config.clone(), channel.into_stream(), handler).await?
             }
         };

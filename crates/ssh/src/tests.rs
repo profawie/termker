@@ -220,6 +220,8 @@ impl server::Handler for TestServer {
     ) -> Result<(), Self::Error> {
         self.forwards.fetch_add(1, Ordering::SeqCst);
         let Ok(mut upstream) = tokio::net::TcpStream::connect((host, port as u16)).await else {
+            // What OpenSSH answers when it cannot reach the destination.
+            reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
             return Ok(());
         };
         self.forwarded.push(channel.id());
@@ -426,6 +428,39 @@ async fn missing_username_is_reported_without_connecting() {
     let result = connect(&[hop], &known_hosts("nouser"), &answers.prompter(), &quiet).await;
     assert!(matches!(result, Err(SshError::MissingUsername { .. })));
     assert!(answers.asked().is_empty());
+}
+
+#[tokio::test]
+async fn unreachable_target_names_the_jump_host_and_address() {
+    let jump_port = start(TestServer::default()).await;
+    // A port nothing listens on: bind one, then free it.
+    let closed = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let closed_port = closed.local_addr().unwrap().port();
+    drop(closed);
+
+    let answers = Answers::new(true, &[PASSWORD]);
+    let hops = [hop("jump", jump_port), hop("target", closed_port)];
+    let result = connect(
+        &hops,
+        &known_hosts("unreachable"),
+        &answers.prompter(),
+        &quiet,
+    )
+    .await;
+    let Err(err) = result else {
+        panic!("the connection should fail");
+    };
+    assert!(matches!(
+        err,
+        SshError::JumpRefused {
+            reason: russh::ChannelOpenFailure::ConnectFailed,
+            ..
+        }
+    ));
+    let text = err.to_string();
+    assert!(text.starts_with(&format!(
+        "jump could not reach target at 127.0.0.1:{closed_port}."
+    )));
 }
 
 #[tokio::test]
