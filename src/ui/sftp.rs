@@ -981,10 +981,14 @@ fn file_list(ui: &mut egui::Ui, theme: &Theme, pane: &mut Pane, index: usize) {
                         ui.add_space(10.0);
                         if !drives {
                             ui.spacing_mut().item_spacing.x = 2.0;
-                            if icon_button(ui, theme, RowIcon::Delete, "Delete").clicked() {
+                            if super::icon_button(ui, theme, super::RowIcon::Delete, "Delete")
+                                .clicked()
+                            {
                                 action = Some(Action::Delete(entry.clone()));
                             }
-                            if icon_button(ui, theme, RowIcon::Rename, "Rename").clicked() {
+                            if super::icon_button(ui, theme, super::RowIcon::Rename, "Rename")
+                                .clicked()
+                            {
                                 action = Some(Action::Rename(entry.name.clone()));
                             }
                             ui.spacing_mut().item_spacing.x = 6.0;
@@ -1047,62 +1051,6 @@ fn file_list(ui: &mut egui::Ui, theme: &Theme, pane: &mut Pane, index: usize) {
         Some(Action::Delete(entry)) => pane.dialog = Some(Dialog::Delete(entry)),
         None => {}
     }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum RowIcon {
-    Rename,
-    Delete,
-}
-
-/// A small square button with a drawn icon: a pencil for Rename, a bin for
-/// Delete. The name is shown when the pointer rests on it.
-fn icon_button(ui: &mut egui::Ui, theme: &Theme, icon: RowIcon, name: &str) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
-    let hovered = response.hovered();
-    let color = match (icon, hovered) {
-        (RowIcon::Delete, true) => theme.danger,
-        (_, true) => theme.text,
-        (_, false) => theme.text_dim,
-    };
-    let painter = ui.painter();
-    if hovered {
-        painter.rect_filled(rect, 6.0, theme.border);
-    }
-    let stroke = egui::Stroke::new(1.4, color);
-    let c = rect.center();
-    let at = |x: f32, y: f32| c + egui::vec2(x, y);
-    match icon {
-        RowIcon::Rename => {
-            // A pencil pointing down to the left.
-            painter.add(egui::Shape::closed_line(
-                vec![at(2.5, -6.5), at(6.5, -2.5), at(-2.5, 6.5), at(-6.5, 2.5)],
-                stroke,
-            ));
-            painter.add(egui::Shape::convex_polygon(
-                vec![at(-6.5, 2.5), at(-2.5, 6.5), at(-7.0, 7.0)],
-                color,
-                stroke,
-            ));
-            painter.line_segment([at(0.0, -4.0), at(4.0, 0.0)], stroke);
-        }
-        RowIcon::Delete => {
-            // A bin: lid with a handle, and a body with two lines.
-            painter.line_segment([at(-6.5, -4.0), at(6.5, -4.0)], stroke);
-            painter.line_segment([at(-2.0, -6.5), at(2.0, -6.5)], stroke);
-            painter.line_segment([at(-2.0, -6.5), at(-2.0, -4.0)], stroke);
-            painter.line_segment([at(2.0, -6.5), at(2.0, -4.0)], stroke);
-            painter.add(egui::Shape::line(
-                vec![at(-5.0, -4.0), at(-4.0, 7.0), at(4.0, 7.0), at(5.0, -4.0)],
-                stroke,
-            ));
-            painter.line_segment([at(-1.5, -1.0), at(-1.5, 4.0)], stroke);
-            painter.line_segment([at(1.5, -1.0), at(1.5, 4.0)], stroke);
-        }
-    }
-    response
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(name)
 }
 
 /// Small picture for a folder, a file or a link.
