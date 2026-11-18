@@ -586,7 +586,11 @@ fn choices(app: &App) -> Vec<(Choice, String)> {
             let label = if host.group.is_empty() {
                 host.display_name().to_string()
             } else {
-                format!("{} / {}", host.group, host.display_name())
+                format!(
+                    "{} > {}",
+                    host.group.replace(crate::model::GROUP_SEPARATOR, " > "),
+                    host.display_name()
+                )
             };
             (Choice::Host(host.id), label)
         }))

@@ -28,13 +28,46 @@ pub struct Host {
 }
 
 /// A named group of hosts on the Hosts page. Hosts refer to it by name
-/// (`Host::group`); a group can exist without any hosts in it.
+/// (`Host::group`); a group can exist without any hosts in it. A group
+/// inside another has its parents in its name: `Client/Prod`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Group {
     pub name: String,
     /// Whether its hosts are hidden on the Hosts page.
     #[serde(default)]
     pub collapsed: bool,
+}
+
+/// Separates the levels of a nested group, as in `Client/Prod`.
+pub const GROUP_SEPARATOR: char = '/';
+
+/// A group name with each level trimmed and empty levels dropped.
+pub fn group_path(name: &str) -> String {
+    name.split(GROUP_SEPARATOR)
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(&GROUP_SEPARATOR.to_string())
+}
+
+/// The group around `name`, or an empty string at the top level.
+pub fn group_parent(name: &str) -> &str {
+    name.rsplit_once(GROUP_SEPARATOR)
+        .map(|(parent, _)| parent)
+        .unwrap_or("")
+}
+
+/// The last level of a group name: `Prod` for `Client/Prod`.
+pub fn group_leaf(name: &str) -> &str {
+    name.rsplit(GROUP_SEPARATOR).next().unwrap_or(name)
+}
+
+/// Whether `name` is the group `group` or a group inside it.
+pub fn in_group(name: &str, group: &str) -> bool {
+    !group.is_empty()
+        && name
+            .strip_prefix(group)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(GROUP_SEPARATOR))
 }
 
 /// How the user authenticates to a host. The secret itself is not stored
@@ -328,6 +361,7 @@ pub enum HostError {
     MissingName,
     MissingUsername,
     GroupExists,
+    GroupInsideItself,
 }
 
 impl std::fmt::Display for HostError {
@@ -335,6 +369,7 @@ impl std::fmt::Display for HostError {
         f.write_str(match self {
             Self::MissingAddress => "Address is required.",
             Self::GroupExists => "A group with this name already exists.",
+            Self::GroupInsideItself => "A group cannot be moved into itself.",
             Self::MissingKeyPath => "Choose the private key file to use.",
             Self::InvalidPort => "Port must be a number from 1 to 65535.",
             Self::JumpLoop => "This jump host would create a loop.",
@@ -486,7 +521,7 @@ impl Data {
         host.label = host.label.trim().to_string();
         host.address = host.address.trim().to_string();
         host.username = host.username.trim().to_string();
-        host.group = host.group.trim().to_string();
+        host.group = group_path(&host.group);
         if host.address.is_empty() {
             return Err(HostError::MissingAddress);
         }
@@ -526,88 +561,145 @@ impl Data {
 
     /// The group called `name`, compared without regard to case.
     pub fn group(&self, name: &str) -> Option<&Group> {
-        let name = name.trim().to_lowercase();
+        let name = group_path(name).to_lowercase();
         self.groups
             .iter()
             .find(|group| group.name.to_lowercase() == name)
     }
 
-    /// Hosts in the group `name`; an empty name means hosts without a group.
+    /// Hosts directly in the group `name`; an empty name means hosts
+    /// without a group.
     pub fn hosts_in_group(&self, name: &str) -> usize {
         self.hosts.iter().filter(|host| host.group == name).count()
     }
 
-    /// Make sure every group a host refers to exists, and keep the groups
-    /// sorted. Data saved before groups were stored on their own only has
-    /// the name on each host.
+    /// Hosts in the group `name` and in every group inside it.
+    pub fn hosts_under_group(&self, name: &str) -> usize {
+        self.hosts
+            .iter()
+            .filter(|host| in_group(&host.group, name))
+            .count()
+    }
+
+    /// Make sure every group a host refers to exists, along with the groups
+    /// it sits inside, and keep the groups in tree order. Data saved before
+    /// groups were stored on their own only has the name on each host.
     pub fn sync_groups(&mut self) {
+        for group in &mut self.groups {
+            group.name = group_path(&group.name);
+        }
+        self.groups.retain(|group| !group.name.is_empty());
         for index in 0..self.hosts.len() {
-            let name = self.hosts[index].group.trim().to_string();
-            match self.group(&name).map(|group| group.name.clone()) {
-                Some(existing) => self.hosts[index].group = existing,
-                None if name.is_empty() => self.hosts[index].group = name,
-                None => {
+            let name = group_path(&self.hosts[index].group);
+            self.hosts[index].group = match self.group(&name) {
+                Some(existing) => existing.name.clone(),
+                None => name,
+            };
+        }
+        // Every group, and every group around it, exists.
+        let mut wanted: Vec<String> = self
+            .hosts
+            .iter()
+            .map(|host| host.group.clone())
+            .chain(self.groups.iter().map(|group| group.name.clone()))
+            .collect();
+        wanted.sort();
+        for name in wanted {
+            let mut path = String::new();
+            for part in name.split(GROUP_SEPARATOR) {
+                if !path.is_empty() {
+                    path.push(GROUP_SEPARATOR);
+                }
+                path.push_str(part);
+                if !path.is_empty() && self.group(&path).is_none() {
                     self.groups.push(Group {
-                        name: name.clone(),
+                        name: path.clone(),
                         collapsed: false,
                     });
-                    self.hosts[index].group = name;
                 }
             }
         }
-        self.groups.retain(|group| !group.name.trim().is_empty());
-        self.groups
-            .sort_by_key(|group| (group.name.to_lowercase(), group.name.clone()));
+        // A parent written in another case than its children is one group.
+        for index in 0..self.groups.len() {
+            if let Some((parent, leaf)) = self.groups[index].name.rsplit_once(GROUP_SEPARATOR)
+                && let Some(existing) = self.group(parent)
+            {
+                self.groups[index].name = format!("{}{GROUP_SEPARATOR}{leaf}", existing.name);
+            }
+        }
+        self.groups.sort_by_key(|group| {
+            group
+                .name
+                .split(GROUP_SEPARATOR)
+                .map(|part| (part.to_lowercase(), part.to_string()))
+                .collect::<Vec<_>>()
+        });
         self.groups.dedup_by_key(|group| group.name.to_lowercase());
+        for index in 0..self.hosts.len() {
+            if let Some(existing) = self.group(&self.hosts[index].group) {
+                self.hosts[index].group = existing.name.clone();
+            }
+        }
     }
 
-    /// Create an empty group.
+    /// Create an empty group. `name` may be a path such as `Client/Prod`;
+    /// the groups around it are created too.
     pub fn add_group(&mut self, name: &str) -> Result<(), HostError> {
-        let name = name.trim();
+        let name = group_path(name);
         if name.is_empty() {
             return Err(HostError::MissingName);
         }
-        if self.group(name).is_some() {
+        if self.group(&name).is_some() {
             return Err(HostError::GroupExists);
         }
         self.groups.push(Group {
-            name: name.to_string(),
+            name,
             collapsed: false,
         });
         self.sync_groups();
         Ok(())
     }
 
-    /// Rename a group; its hosts stay in it.
+    /// Rename or move a group. The groups inside it and all their hosts
+    /// follow.
     pub fn rename_group(&mut self, from: &str, to: &str) -> Result<(), HostError> {
-        let to = to.trim();
+        let to = group_path(to);
         if to.is_empty() {
             return Err(HostError::MissingName);
         }
         // Changing only the letter case of the same group is allowed.
-        if to.to_lowercase() != from.to_lowercase() && self.group(to).is_some() {
+        if to.to_lowercase() != from.to_lowercase() && self.group(&to).is_some() {
             return Err(HostError::GroupExists);
         }
+        // A group cannot be moved into itself.
+        if to.to_lowercase() != from.to_lowercase()
+            && in_group(&to.to_lowercase(), &from.to_lowercase())
+        {
+            return Err(HostError::GroupInsideItself);
+        }
+        let moved = |name: &str| format!("{to}{}", &name[from.len()..]);
         for group in &mut self.groups {
-            if group.name == from {
-                group.name = to.to_string();
+            if in_group(&group.name, from) {
+                group.name = moved(&group.name);
             }
         }
         for host in &mut self.hosts {
-            if host.group == from {
-                host.group = to.to_string();
+            if in_group(&host.group, from) {
+                host.group = moved(&host.group);
             }
         }
         self.sync_groups();
         Ok(())
     }
 
-    /// Delete a group. Its hosts are kept and become ungrouped.
+    /// Delete a group and the groups inside it. Their hosts are kept and
+    /// move to the group around it, or become ungrouped.
     pub fn remove_group(&mut self, name: &str) {
-        self.groups.retain(|group| group.name != name);
+        let parent = group_parent(name).to_string();
+        self.groups.retain(|group| !in_group(&group.name, name));
         for host in &mut self.hosts {
-            if host.group == name {
-                host.group.clear();
+            if in_group(&host.group, name) {
+                host.group = parent.clone();
             }
         }
     }
@@ -772,6 +864,45 @@ mod tests {
         assert_eq!(group_names(&data), ["production"]);
         // The host is kept, without a group.
         assert_eq!(data.host(web.id).unwrap().group, "");
+    }
+
+    #[test]
+    fn groups_can_sit_inside_groups() {
+        let mut data = Data::default();
+        let server = grouped("server1", " Klien1 / Prod ");
+        data.upsert_host(server.clone()).unwrap();
+        // The groups around it are created, in tree order.
+        assert_eq!(group_names(&data), ["Klien1", "Klien1/Prod"]);
+        assert_eq!(data.host(server.id).unwrap().group, "Klien1/Prod");
+        data.add_group("klien1/Staging").unwrap();
+        data.add_group("Klien10").unwrap();
+        assert_eq!(
+            group_names(&data),
+            ["Klien1", "Klien1/Prod", "Klien1/Staging", "Klien10"]
+        );
+        assert_eq!(data.hosts_in_group("Klien1"), 0);
+        assert_eq!(data.hosts_under_group("Klien1"), 1);
+        assert_eq!(data.hosts_under_group("Klien10"), 0);
+
+        // Renaming the outer group takes everything inside along.
+        assert_eq!(
+            data.rename_group("Klien1", "Klien1/Prod/Deeper"),
+            Err(HostError::GroupInsideItself)
+        );
+        data.rename_group("Klien1", "Acme").unwrap();
+        assert_eq!(
+            group_names(&data),
+            ["Acme", "Acme/Prod", "Acme/Staging", "Klien10"]
+        );
+        assert_eq!(data.host(server.id).unwrap().group, "Acme/Prod");
+
+        // Deleting an inner group moves its hosts one level up.
+        data.remove_group("Acme/Prod");
+        assert_eq!(data.host(server.id).unwrap().group, "Acme");
+        // Deleting the outer group removes what is inside it too.
+        data.remove_group("Acme");
+        assert_eq!(group_names(&data), ["Klien10"]);
+        assert_eq!(data.host(server.id).unwrap().group, "");
     }
 
     #[test]

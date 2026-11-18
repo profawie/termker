@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::{
     app::App,
-    model::{AuthMethod, Data, Host},
+    model::{self, AuthMethod, Data, Host},
 };
 
 const CARD_INNER_WIDTH: f32 = 240.0;
@@ -22,21 +22,39 @@ pub struct HostsPage {
 /// A small form shown above the host list for managing groups.
 enum GroupForm {
     New {
+        /// Group the new one goes inside; empty for the top level.
+        parent: String,
         name: String,
         error: Option<String>,
     },
     Rename {
         from: String,
+        /// Only the last level of the name is edited.
         name: String,
         error: Option<String>,
     },
     Delete(String),
 }
 
+/// Full name of the group `name` inside `parent`.
+fn inside(parent: &str, name: &str) -> String {
+    if parent.is_empty() {
+        name.to_string()
+    } else {
+        format!("{parent}{}{name}", model::GROUP_SEPARATOR)
+    }
+}
+
+/// A group's full name for display: `Client > Prod`.
+fn shown(group: &str) -> String {
+    group.replace(model::GROUP_SEPARATOR, " > ")
+}
+
 /// What the user asked for on a group's header row.
 enum GroupAction {
     Toggle(String, bool),
     AddHost(String),
+    AddGroup(String),
     Rename(String),
     Delete(String),
 }
@@ -98,6 +116,7 @@ impl HostsPage {
                 }
                 if ui.button("+  New group").clicked() {
                     self.group_form = Some(GroupForm::New {
+                        parent: String::new(),
                         name: String::new(),
                         error: None,
                     });
@@ -130,28 +149,35 @@ impl HostsPage {
             // Leave room for the scroll bar next to the group buttons.
             ui.set_width(ui.available_width() - 12.0);
             for section in &sections {
-                if let Some(action) = group_header(ui, app, section) {
+                let indent = section.depth as f32 * INDENT;
+                if let Some(action) = group_header(ui, app, section, indent) {
                     group_action = Some(action);
                 }
                 if section.collapsed {
                     ui.add_space(6.0);
                     continue;
                 }
-                if section.hosts.is_empty() {
-                    ui.label(
-                        RichText::new("No hosts in this group yet.")
-                            .small()
-                            .color(theme.text_dim),
-                    );
+                if section.hosts.is_empty() && section.total == 0 && !section.has_groups {
+                    ui.horizontal(|ui| {
+                        ui.add_space(indent + INDENT);
+                        ui.label(
+                            RichText::new("No hosts in this group yet.")
+                                .small()
+                                .color(theme.text_dim),
+                        );
+                    });
                 }
                 // Column count follows the available width, so cards are
                 // never hidden under the editor panel.
                 let gap = ui.spacing().item_spacing.x;
-                let columns = ((ui.available_width() + gap) / (CARD_OUTER_WIDTH + gap))
+                let columns = ((ui.available_width() - indent + gap) / (CARD_OUTER_WIDTH + gap))
                     .floor()
                     .max(1.0) as usize;
                 for row in section.hosts.chunks(columns) {
                     ui.horizontal(|ui| {
+                        if indent > 0.0 {
+                            ui.add_space(indent - gap);
+                        }
                         for host in row {
                             let selected = self
                                 .editor
@@ -165,7 +191,7 @@ impl HostsPage {
                         }
                     });
                 }
-                ui.add_space(12.0);
+                ui.add_space(if section.hosts.is_empty() { 2.0 } else { 12.0 });
             }
         });
         drop(sections);
@@ -175,10 +201,17 @@ impl HostsPage {
                 app.save();
             }
             Some(GroupAction::AddHost(name)) => self.editor = Some(Editor::new_host_in(&name)),
+            Some(GroupAction::AddGroup(parent)) => {
+                self.group_form = Some(GroupForm::New {
+                    parent,
+                    name: String::new(),
+                    error: None,
+                });
+            }
             Some(GroupAction::Rename(name)) => {
                 self.group_form = Some(GroupForm::Rename {
-                    from: name.clone(),
-                    name,
+                    name: model::group_leaf(&name).to_string(),
+                    from: name,
                     error: None,
                 });
             }
@@ -204,11 +237,22 @@ impl HostsPage {
         super::card(&theme).show(ui, |ui| {
             ui.set_width(ui.available_width());
             match &mut form {
-                GroupForm::New { name, error } => {
-                    ui.label(RichText::new("New group").strong());
+                GroupForm::New {
+                    parent,
+                    name,
+                    error,
+                } => {
+                    let title = if parent.is_empty() {
+                        "New group".to_string()
+                    } else {
+                        format!("New group inside {}", shown(parent))
+                    };
+                    ui.label(RichText::new(title).strong());
                     match name_form(ui, &theme, name, "Create") {
-                        Some(true) => match app.data.add_group(name) {
+                        Some(true) => match app.data.add_group(&inside(parent, name)) {
                             Ok(()) => {
+                                // Open the groups around it so it is seen.
+                                app.data.set_group_collapsed(parent, false);
                                 app.save();
                                 close = true;
                             }
@@ -217,26 +261,37 @@ impl HostsPage {
                         Some(false) => close = true,
                         None => {}
                     }
+                    ui.label(
+                        RichText::new(
+                            "Tip: use / to make a group inside another, for example Client/Prod.",
+                        )
+                        .small()
+                        .color(theme.text_dim),
+                    );
                     if let Some(error) = error {
                         ui.label(RichText::new(error.as_str()).color(theme.danger));
                     }
                 }
                 GroupForm::Rename { from, name, error } => {
-                    ui.label(RichText::new(format!("Rename group {from}")).strong());
+                    ui.label(RichText::new(format!("Rename group {}", shown(from))).strong());
                     match name_form(ui, &theme, name, "Rename") {
-                        Some(true) => match app.data.rename_group(from, name) {
-                            Ok(()) => {
-                                // An open editor keeps pointing at the group.
-                                if let Some(editor) = &mut self.editor
-                                    && editor.draft.group == *from
-                                {
-                                    editor.draft.group = name.trim().to_string();
+                        Some(true) => {
+                            let to = model::group_path(&inside(model::group_parent(from), name));
+                            match app.data.rename_group(from, &to) {
+                                Ok(()) => {
+                                    // An open editor keeps pointing at the group.
+                                    if let Some(editor) = &mut self.editor
+                                        && model::in_group(&editor.draft.group, from)
+                                    {
+                                        editor.draft.group =
+                                            format!("{to}{}", &editor.draft.group[from.len()..]);
+                                    }
+                                    app.save();
+                                    close = true;
                                 }
-                                app.save();
-                                close = true;
+                                Err(err) => *error = Some(err.to_string()),
                             }
-                            Err(err) => *error = Some(err.to_string()),
-                        },
+                        }
                         Some(false) => close = true,
                         None => {}
                     }
@@ -246,15 +301,34 @@ impl HostsPage {
                 }
                 GroupForm::Delete(name) => {
                     ui.label(
-                        RichText::new(format!("Delete the group {name}?"))
+                        RichText::new(format!("Delete the group {}?", shown(name)))
                             .strong()
                             .color(theme.danger),
                     );
-                    let note = match app.data.hosts_in_group(name) {
-                        0 => "It has no hosts.".to_string(),
-                        1 => "Its host is kept and moves to Ungrouped.".to_string(),
-                        count => format!("Its {count} hosts are kept and move to Ungrouped."),
+                    let parent = model::group_parent(name);
+                    let to = if parent.is_empty() {
+                        "Ungrouped".to_string()
+                    } else {
+                        shown(parent)
                     };
+                    let groups = app
+                        .data
+                        .groups
+                        .iter()
+                        .filter(|group| model::in_group(&group.name, name))
+                        .count()
+                        - 1;
+                    let mut note = match app.data.hosts_under_group(name) {
+                        0 => "It has no hosts.".to_string(),
+                        1 => format!("Its host is kept and moves to {to}."),
+                        count => format!("Its {count} hosts are kept and move to {to}."),
+                    };
+                    match groups {
+                        0 => {}
+                        1 => note.push_str(" The group inside it is deleted too."),
+                        count => note
+                            .push_str(&format!(" The {count} groups inside it are deleted too.")),
+                    }
                     ui.label(RichText::new(note).color(theme.text_dim));
                     ui.horizontal(|ui| {
                         if ui
@@ -263,9 +337,9 @@ impl HostsPage {
                         {
                             app.data.remove_group(name);
                             if let Some(editor) = &mut self.editor
-                                && editor.draft.group == *name
+                                && model::in_group(&editor.draft.group, name)
                             {
-                                editor.draft.group.clear();
+                                editor.draft.group = parent.to_string();
                             }
                             app.save();
                             close = true;
@@ -634,25 +708,38 @@ fn host_card(ui: &mut egui::Ui, app: &App, host: &Host, selected: bool) -> CardA
     action
 }
 
+/// Width one level of nesting is moved to the right.
+const INDENT: f32 = 22.0;
+
 /// One group on the Hosts page with the hosts to show in it.
 struct Section<'a> {
-    /// Empty for hosts without a group.
+    /// Full name; empty for hosts without a group.
     name: &'a str,
+    /// What the header shows: the last level, or the full path in a search.
+    title: String,
+    /// How many groups it sits inside.
+    depth: usize,
+    /// Hosts directly in the group.
     hosts: Vec<&'a Host>,
+    /// Hosts in the group and in the groups inside it.
+    total: usize,
+    has_groups: bool,
     collapsed: bool,
 }
 
-/// Groups by name with their hosts by name, then the hosts without a group.
-/// While searching, only groups with a matching host are listed, opened.
+/// Groups in tree order with their hosts by name, then the hosts without a
+/// group. Groups inside a closed group are left out. While searching, only
+/// groups with a matching host are listed, opened, by their full name.
 fn sections<'a>(data: &'a Data, search: &str) -> Vec<Section<'a>> {
     let needle = search.trim().to_lowercase();
-    let section = |name: &'a str, collapsed: bool| {
+    let searching = !needle.is_empty();
+    let hosts_of = |name: &str| {
         let mut hosts: Vec<&Host> = data
             .hosts
             .iter()
             .filter(|host| host.group == name)
             .filter(|host| {
-                needle.is_empty()
+                !searching
                     || format!(
                         "{} {} {} {}",
                         host.label, host.address, host.username, host.group
@@ -662,33 +749,76 @@ fn sections<'a>(data: &'a Data, search: &str) -> Vec<Section<'a>> {
             })
             .collect();
         hosts.sort_by_key(|host| host.display_name().to_lowercase());
-        Section {
-            name,
-            hosts,
-            collapsed: collapsed && needle.is_empty(),
-        }
+        hosts
     };
-    let mut sections: Vec<Section> = data
-        .groups
-        .iter()
-        .map(|group| section(&group.name, group.collapsed))
-        .filter(|section| needle.is_empty() || !section.hosts.is_empty())
-        .collect();
-    let ungrouped = section("", false);
-    if !ungrouped.hosts.is_empty() {
-        sections.push(ungrouped);
+    let mut sections = Vec::new();
+    // Name of the outermost closed group being skipped.
+    let mut closed: Option<&str> = None;
+    for group in &data.groups {
+        let name = group.name.as_str();
+        let hosts = hosts_of(name);
+        if searching {
+            if !hosts.is_empty() {
+                sections.push(Section {
+                    name,
+                    title: shown(name),
+                    depth: 0,
+                    total: hosts.len(),
+                    hosts,
+                    has_groups: false,
+                    collapsed: false,
+                });
+            }
+            continue;
+        }
+        if closed.is_some_and(|closed| model::in_group(name, closed)) {
+            continue;
+        }
+        closed = group.collapsed.then_some(name);
+        sections.push(Section {
+            name,
+            title: model::group_leaf(name).to_string(),
+            depth: name.matches(model::GROUP_SEPARATOR).count(),
+            hosts,
+            total: data.hosts_under_group(name),
+            has_groups: data
+                .groups
+                .iter()
+                .any(|other| other.name != name && model::in_group(&other.name, name)),
+            collapsed: group.collapsed,
+        });
+    }
+    let ungrouped = hosts_of("");
+    if !ungrouped.is_empty() {
+        sections.push(Section {
+            name: "",
+            title: "Ungrouped".to_string(),
+            depth: 0,
+            total: ungrouped.len(),
+            hosts: ungrouped,
+            has_groups: false,
+            collapsed: false,
+        });
     }
     sections
 }
 
 /// Header row of a group: open/close arrow, name, host count and actions.
-fn group_header(ui: &mut egui::Ui, app: &App, section: &Section) -> Option<GroupAction> {
+fn group_header(
+    ui: &mut egui::Ui,
+    app: &App,
+    section: &Section,
+    indent: f32,
+) -> Option<GroupAction> {
     let theme = app.theme;
     let mut action = None;
     let named = !section.name.is_empty();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        let title = if named { section.name } else { "Ungrouped" };
+        if indent > 0.0 {
+            ui.add_space(indent - 6.0);
+        }
+        let title = section.title.as_str();
         if named {
             let (rect, arrow) =
                 ui.allocate_exact_size(egui::vec2(14.0, 20.0), egui::Sense::click());
@@ -740,7 +870,7 @@ fn group_header(ui: &mut egui::Ui, app: &App, section: &Section) -> Option<Group
                     .color(theme.text_dim),
             );
         }
-        let count = match section.hosts.len() {
+        let count = match section.total {
             1 => "1 host".to_string(),
             count => format!("{count} hosts"),
         };
@@ -760,6 +890,13 @@ fn group_header(ui: &mut egui::Ui, app: &App, section: &Section) -> Option<Group
                 {
                     action = Some(GroupAction::AddHost(section.name.to_string()));
                 }
+                if ui
+                    .small_button("+ Group")
+                    .on_hover_text("New group inside this one")
+                    .clicked()
+                {
+                    action = Some(GroupAction::AddGroup(section.name.to_string()));
+                }
             });
         }
     });
@@ -776,7 +913,7 @@ fn group_field(ui: &mut egui::Ui, app: &App, editor: &mut Editor) {
             let choose = ui.button("Choose existing");
             ui.add(
                 egui::TextEdit::singleline(&mut editor.draft.group)
-                    .hint_text("New group name")
+                    .hint_text("New group, e.g. Client/Prod")
                     .desired_width(f32::INFINITY),
             );
             if choose.clicked() {
@@ -790,18 +927,21 @@ fn group_field(ui: &mut egui::Ui, app: &App, editor: &mut Editor) {
     }
     const NO_GROUP: &str = "No group";
     let current = if editor.draft.group.is_empty() {
-        NO_GROUP
+        NO_GROUP.to_string()
     } else {
-        editor.draft.group.as_str()
-    }
-    .to_string();
+        shown(&editor.draft.group)
+    };
     egui::ComboBox::from_id_salt("host_group")
         .selected_text(current)
         .width(ui.available_width())
         .show_ui(ui, |ui| {
             ui.selectable_value(&mut editor.draft.group, String::new(), NO_GROUP);
             for group in &app.data.groups {
-                ui.selectable_value(&mut editor.draft.group, group.name.clone(), &group.name);
+                ui.selectable_value(
+                    &mut editor.draft.group,
+                    group.name.clone(),
+                    shown(&group.name),
+                );
             }
             ui.separator();
             if ui.selectable_label(false, "+  New group...").clicked() {
@@ -895,5 +1035,34 @@ mod tests {
         data.set_group_collapsed("Prod", true);
         assert!(sections(&data, "")[1].collapsed);
         assert!(!sections(&data, "web")[0].collapsed);
+    }
+
+    #[test]
+    fn groups_inside_groups_are_indented_and_hidden_when_the_outer_one_is_closed() {
+        let mut data = data();
+        data.upsert_host(Host {
+            label: "server1".into(),
+            address: "s1.internal".into(),
+            group: "Klien1/Prod".into(),
+            ..Host::new()
+        })
+        .unwrap();
+        let listed = sections(&data, "");
+        assert_eq!(
+            names(&listed),
+            ["Empty", "Klien1", "Klien1/Prod", "Prod", ""]
+        );
+        assert_eq!((listed[1].depth, listed[1].title.as_str()), (0, "Klien1"));
+        assert_eq!((listed[2].depth, listed[2].title.as_str()), (1, "Prod"));
+        // The outer group counts the hosts of the groups inside it.
+        assert_eq!((listed[1].hosts.len(), listed[1].total), (0, 1));
+        assert!(listed[1].has_groups);
+
+        // A search lists the inner group by its full name.
+        let found = sections(&data, "server1");
+        assert_eq!(found[0].title, "Klien1 > Prod");
+
+        data.set_group_collapsed("Klien1", true);
+        assert_eq!(names(&sections(&data, "")), ["Empty", "Klien1", "Prod", ""]);
     }
 }

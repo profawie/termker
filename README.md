@@ -14,7 +14,7 @@ Version: 0.2.0
 
 | Feature | Status |
 | --- | --- |
-| Host management with search and groups you can add, rename, collapse and delete | Done |
+| Host management with search and groups, including groups inside groups (Client > Prod > server), that you can add, rename, collapse and delete | Done |
 | Dark, light or system appearance for the app; separate terminal color themes (default: green text on black) | Done |
 | About screen listing every library, its version and website | Done |
 | SSH terminal (password or key file) with host key verification | Done |
