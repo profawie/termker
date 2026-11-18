@@ -207,6 +207,14 @@ pub struct Settings {
     /// had a separate light and dark mode.
     #[serde(default = "default_theme", alias = "theme")]
     pub terminal_theme: String,
+    /// Text color chosen by the user for the terminal, as `#RRGGBB`. When
+    /// set it replaces the theme's text color.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_text: Option<String>,
+    /// Background color chosen by the user for the terminal, as `#RRGGBB`.
+    /// When set it replaces the theme's background.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_background: Option<String>,
     #[serde(default = "default_font_size")]
     pub terminal_font_size: f32,
 }
@@ -224,6 +232,8 @@ impl Default for Settings {
         Self {
             appearance: Appearance::default(),
             terminal_theme: default_theme(),
+            terminal_text: None,
+            terminal_background: None,
             terminal_font_size: default_font_size(),
         }
     }
@@ -911,6 +921,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(old.os, None);
+    }
+
+    #[test]
+    fn own_terminal_colors_are_saved_only_when_set() {
+        let mut settings = Settings::default();
+        let text = serde_json::to_string(&settings).unwrap();
+        assert!(!text.contains("terminal_text") && !text.contains("terminal_background"));
+
+        settings.terminal_text = Some("#FFFFFF".into());
+        settings.terminal_background = Some("#202020".into());
+        let text = serde_json::to_string(&settings).unwrap();
+        let back: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, settings);
     }
 
     fn grouped(label: &str, group: &str) -> Host {

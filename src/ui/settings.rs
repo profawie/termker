@@ -5,7 +5,7 @@ use eframe::egui::{self, RichText};
 use crate::{
     app::App,
     model::Appearance,
-    theme::{TERMINAL_THEMES, Theme},
+    theme::{self as colors, TERMINAL_THEMES, Theme},
 };
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
@@ -43,17 +43,28 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     );
     ui.add_space(4.0);
     let active = app.terminal_theme.name;
+    let custom = app.data.settings.terminal_text.is_some()
+        || app.data.settings.terminal_background.is_some();
     let mut chosen = None;
     ui.horizontal_wrapped(|ui| {
         for candidate in TERMINAL_THEMES {
-            if swatch(ui, candidate, candidate.name == active).clicked() {
+            if swatch(ui, candidate, !custom && candidate.name == active).clicked() {
                 chosen = Some(*candidate);
             }
+        }
+        if custom {
+            // Preview of the user's own colors; the colors are changed below.
+            let own = Theme {
+                name: "Custom",
+                ..app.terminal_theme
+            };
+            swatch(ui, &own, true);
         }
     });
     if let Some(chosen) = chosen {
         app.set_terminal_theme(chosen);
     }
+    terminal_colors(app, ui, &theme);
 
     ui.add_space(20.0);
     ui.label(RichText::new("Data").strong());
@@ -67,6 +78,83 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         RichText::new("Passwords and private keys are never written to this file.")
             .color(theme.text_dim),
     );
+}
+
+/// The user's own text and background colors for the terminal, on top of
+/// the chosen theme.
+fn terminal_colors(app: &mut App, ui: &mut egui::Ui, theme: &Theme) {
+    let base = Theme::terminal(&app.data.settings.terminal_theme);
+    let custom = app.data.settings.terminal_text.is_some()
+        || app.data.settings.terminal_background.is_some();
+    let current = app.terminal_theme;
+    let mut text = current.text.to_array();
+    let mut background = current.bg.to_array();
+    let mut changed = false;
+    let mut reset = false;
+
+    ui.add_space(8.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Text");
+        let mut rgb = [text[0], text[1], text[2]];
+        if ui
+            .color_edit_button_srgb(&mut rgb)
+            .on_hover_text("Click to pick the terminal text color")
+            .changed()
+        {
+            text = [rgb[0], rgb[1], rgb[2], 255];
+            changed = true;
+        }
+        ui.add_space(12.0);
+        ui.label("Background");
+        let mut rgb = [background[0], background[1], background[2]];
+        if ui
+            .color_edit_button_srgb(&mut rgb)
+            .on_hover_text("Click to pick the terminal background color")
+            .changed()
+        {
+            background = [rgb[0], rgb[1], rgb[2], 255];
+            changed = true;
+        }
+        if custom {
+            ui.add_space(12.0);
+            if ui
+                .button(format!("Use {} colors", base.name))
+                .on_hover_text("Go back to the theme's own text and background")
+                .clicked()
+            {
+                reset = true;
+            }
+        }
+    });
+
+    if reset {
+        app.set_terminal_theme(base);
+    } else if changed {
+        let text = egui::Color32::from_rgb(text[0], text[1], text[2]);
+        let background = egui::Color32::from_rgb(background[0], background[1], background[2]);
+        // A color equal to the theme's own is not saved as a custom one.
+        app.set_terminal_colors(
+            (text != base.text).then_some(text),
+            (background != base.bg).then_some(background),
+        );
+    }
+
+    let hint = if custom {
+        format!(
+            "Your own colors on top of {}. Picking a theme above resets them.",
+            base.name
+        )
+    } else {
+        "Click a color to choose your own.".to_string()
+    };
+    ui.label(RichText::new(hint).small().color(theme.text_dim));
+    if colors::contrast(app.terminal_theme.text, app.terminal_theme.bg) < 4.5 {
+        ui.label(
+            RichText::new("The text may be hard to read on this background.")
+                .small()
+                .color(theme.danger),
+        );
+    }
 }
 
 /// Terminal theme preview: a small box painted with that theme's own colors.
