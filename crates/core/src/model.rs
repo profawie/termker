@@ -137,10 +137,26 @@ impl Host {
     }
 }
 
+/// Light or dark look for the app's windows, lists and dialogs. The terminal
+/// has its own color theme.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Appearance {
+    /// Follow the operating system's light or dark setting.
+    System,
+    #[default]
+    Dark,
+    Light,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
-    #[serde(default = "default_theme")]
-    pub theme: String,
+    #[serde(default)]
+    pub appearance: Appearance,
+    /// Name of the terminal color theme. Saved as `theme` before the app
+    /// had a separate light and dark mode.
+    #[serde(default = "default_theme", alias = "theme")]
+    pub terminal_theme: String,
     #[serde(default = "default_font_size")]
     pub terminal_font_size: f32,
 }
@@ -156,7 +172,8 @@ fn default_font_size() -> f32 {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            theme: default_theme(),
+            appearance: Appearance::default(),
+            terminal_theme: default_theme(),
             terminal_font_size: default_font_size(),
         }
     }
@@ -544,6 +561,16 @@ mod tests {
             address: format!("{label}.example.com"),
             ..Host::new()
         }
+    }
+
+    #[test]
+    fn settings_from_before_light_and_dark_mode_keep_the_terminal_theme() {
+        let old: Settings = serde_json::from_str(r#"{"theme":"Amber"}"#).unwrap();
+        assert_eq!(old.terminal_theme, "Amber");
+        assert_eq!(old.appearance, Appearance::Dark);
+        let text = serde_json::to_string(&old).unwrap();
+        assert!(text.contains(r#""terminal_theme":"Amber""#));
+        assert!(text.contains(r#""appearance":"dark""#));
     }
 
     #[test]

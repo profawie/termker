@@ -4,12 +4,17 @@ A desktop SSH client for individuals, written entirely in Rust. Runs on Windows 
 
 Version: 0.1.0
 
+| Dark | Light |
+| --- | --- |
+| ![Hosts page in dark mode](docs/screenshots/hosts-dark.png) | ![Hosts page in light mode](docs/screenshots/hosts-light.png) |
+| ![Settings in dark mode](docs/screenshots/settings-dark.png) | ![Terminal session in light mode](docs/screenshots/terminal-light.png) |
+
 ## Features
 
 | Feature | Status |
 | --- | --- |
 | Host management with groups and search | Done |
-| Themes (default: green text on black) | Done |
+| Dark, light or system appearance for the app; separate terminal color themes (default: green text on black) | Done |
 | About screen listing every library, its version and website | Done |
 | SSH terminal (password or key file) with host key verification | Done |
 | Jump server (ProxyJump), any number of hops | Done |

@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     keychain::KeyStore,
-    model::Data,
+    model::{Appearance, Data},
     secrets::SecretStore,
     session::{Session, SessionState},
     ssh::{
@@ -117,7 +117,10 @@ impl Page {
 pub struct App {
     store: Store,
     pub data: Data,
+    /// Colors of the app's windows, lists and dialogs.
     pub theme: Theme,
+    /// Colors of the terminal.
+    pub terminal_theme: Theme,
     page: Page,
     hosts_page: HostsPage,
     forwards_page: ForwardsPage,
@@ -132,6 +135,17 @@ pub struct App {
     pub key_store: KeyStore,
     pub secrets: SecretStore,
     pub sessions: Vec<Session>,
+}
+
+/// The app's look for the `appearance` setting.
+fn ui_theme(appearance: Appearance, ctx: &egui::Context) -> Theme {
+    let dark = match appearance {
+        Appearance::Dark => true,
+        Appearance::Light => false,
+        // Dark when the system does not say.
+        Appearance::System => ctx.system_theme() != Some(egui::Theme::Light),
+    };
+    Theme::ui(dark)
 }
 
 /// A message shown in a bar at the top of the window until dismissed.
@@ -200,8 +214,9 @@ impl App {
                 (Data::default(), Some(Notice::error(notice)))
             }
         };
-        let theme = Theme::by_name(&data.settings.theme);
+        let theme = ui_theme(data.settings.appearance, &cc.egui_ctx);
         theme.apply(&cc.egui_ctx);
+        let terminal_theme = Theme::terminal(&data.settings.terminal_theme);
         let data_dir = store
             .path()
             .and_then(|path| path.parent())
@@ -223,6 +238,7 @@ impl App {
             store,
             data,
             theme,
+            terminal_theme,
             page: Page::Hosts,
             hosts_page: HostsPage::default(),
             forwards_page: ForwardsPage::default(),
@@ -232,11 +248,29 @@ impl App {
         }
     }
 
-    pub fn set_theme(&mut self, ctx: &egui::Context, theme: Theme) {
-        self.theme = theme;
-        self.data.settings.theme = theme.name.to_string();
-        theme.apply(ctx);
+    pub fn set_appearance(&mut self, ctx: &egui::Context, appearance: Appearance) {
+        self.data.settings.appearance = appearance;
+        self.theme = ui_theme(appearance, ctx);
+        self.theme.apply(ctx);
         self.save();
+    }
+
+    pub fn set_terminal_theme(&mut self, theme: Theme) {
+        self.terminal_theme = theme;
+        self.data.settings.terminal_theme = theme.name.to_string();
+        self.save();
+    }
+
+    /// With the "System" setting, switch when the operating system does.
+    fn follow_system_appearance(&mut self, ctx: &egui::Context) {
+        if self.data.settings.appearance != Appearance::System {
+            return;
+        }
+        let theme = ui_theme(Appearance::System, ctx);
+        if theme != self.theme {
+            self.theme = theme;
+            theme.apply(ctx);
+        }
     }
 
     pub fn save(&mut self) {
@@ -505,6 +539,7 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.follow_system_appearance(ui.ctx());
         let theme = self.theme;
 
         // Sessions keep receiving output while another page is shown.

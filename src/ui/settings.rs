@@ -1,28 +1,58 @@
-//! Settings: theme selection.
+//! Settings: light or dark look, terminal colors.
 
 use eframe::egui::{self, RichText};
 
 use crate::{
     app::App,
-    theme::{THEMES, Theme},
+    model::Appearance,
+    theme::{TERMINAL_THEMES, Theme},
 };
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let theme = app.theme;
     super::page_header(ui, &theme, "Settings", "Appearance and preferences.");
 
-    ui.label(RichText::new("Theme").strong());
+    ui.label(RichText::new("Appearance").strong());
+    ui.label(
+        RichText::new("Colors of the sidebar, pages and dialogs.")
+            .small()
+            .color(theme.text_dim),
+    );
     ui.add_space(4.0);
+    let current = app.data.settings.appearance;
+    let mut appearance = current;
+    ui.horizontal(|ui| {
+        for (value, label) in [
+            (Appearance::System, "System"),
+            (Appearance::Dark, "Dark"),
+            (Appearance::Light, "Light"),
+        ] {
+            ui.selectable_value(&mut appearance, value, label);
+        }
+    });
+    if appearance != current {
+        app.set_appearance(ui.ctx(), appearance);
+    }
+
+    ui.add_space(20.0);
+    ui.label(RichText::new("Terminal colors").strong());
+    ui.label(
+        RichText::new("Used inside terminal sessions only.")
+            .small()
+            .color(theme.text_dim),
+    );
+    ui.add_space(4.0);
+    let active = app.terminal_theme.name;
     let mut chosen = None;
     ui.horizontal_wrapped(|ui| {
-        for candidate in THEMES {
-            if swatch(ui, candidate, candidate.name == theme.name).clicked() {
+        for candidate in TERMINAL_THEMES {
+            if swatch(ui, candidate, candidate.name == active).clicked() {
                 chosen = Some(*candidate);
             }
         }
     });
     if let Some(chosen) = chosen {
-        app.set_theme(ui.ctx(), chosen);
+        app.set_terminal_theme(chosen);
     }
 
     ui.add_space(20.0);
@@ -39,7 +69,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     );
 }
 
-/// Theme preview: a small box painted with that theme's own colors.
+/// Terminal theme preview: a small box painted with that theme's own colors.
 fn swatch(ui: &mut egui::Ui, theme: &Theme, selected: bool) -> egui::Response {
     let size = egui::vec2(168.0, 96.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());

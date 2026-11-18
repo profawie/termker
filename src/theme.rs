@@ -1,4 +1,6 @@
-//! Color themes. The default is "Phosphor": green text on a black background.
+//! Colors. The app's windows, lists and dialogs use a light or dark look
+//! ([`Theme::ui`]). The terminal has its own color themes
+//! ([`TERMINAL_THEMES`]); the default is "Phosphor", green text on black.
 
 use eframe::egui::{self, Color32, CornerRadius, Stroke};
 
@@ -8,7 +10,7 @@ pub use termker_core::DEFAULT_THEME;
 pub struct Theme {
     pub name: &'static str,
     pub dark: bool,
-    /// Main background and terminal background.
+    /// Main background (for a terminal theme, the terminal background).
     pub bg: Color32,
     /// Sidebar and panel background.
     pub panel: Color32,
@@ -27,7 +29,38 @@ const fn rgb(hex: u32) -> Color32 {
     Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
 
-pub const THEMES: &[Theme] = &[
+/// Dark look for the app: soft greys rather than black, easy on the eyes.
+pub const UI_DARK: Theme = Theme {
+    name: "Dark",
+    dark: true,
+    bg: rgb(0x24272B),
+    panel: rgb(0x1C1F22),
+    surface: rgb(0x2E3237),
+    border: rgb(0x40454D),
+    text: rgb(0xE4E6E9),
+    text_dim: rgb(0xA4ABB3),
+    accent: rgb(0x4ADE80),
+    on_accent: rgb(0x0F1A12),
+    danger: rgb(0xF87171),
+};
+
+/// Light look for the app.
+pub const UI_LIGHT: Theme = Theme {
+    name: "Light",
+    dark: false,
+    bg: rgb(0xF6F7F8),
+    panel: rgb(0xECEEF1),
+    surface: rgb(0xFFFFFF),
+    border: rgb(0xD2D7DD),
+    text: rgb(0x1F2328),
+    text_dim: rgb(0x57606A),
+    accent: rgb(0x15803D),
+    on_accent: rgb(0xFFFFFF),
+    danger: rgb(0xB91C1C),
+};
+
+/// Color themes for the terminal.
+pub const TERMINAL_THEMES: &[Theme] = &[
     Theme {
         name: "Phosphor",
         dark: true,
@@ -96,16 +129,27 @@ pub const THEMES: &[Theme] = &[
 ];
 
 impl Theme {
-    /// The theme called `name`, or the default theme if the name is unknown.
-    pub fn by_name(name: &str) -> Theme {
-        THEMES
+    /// The terminal theme called `name`, or the default one if the name is
+    /// unknown.
+    pub fn terminal(name: &str) -> Theme {
+        TERMINAL_THEMES
             .iter()
             .find(|theme| theme.name == name)
-            .or_else(|| THEMES.iter().find(|theme| theme.name == DEFAULT_THEME))
+            .or_else(|| {
+                TERMINAL_THEMES
+                    .iter()
+                    .find(|theme| theme.name == DEFAULT_THEME)
+            })
             .copied()
             .expect("default theme exists")
     }
 
+    /// The app's dark or light look.
+    pub fn ui(dark: bool) -> Theme {
+        if dark { UI_DARK } else { UI_LIGHT }
+    }
+
+    /// Use this theme for the app's windows, lists and dialogs.
     pub fn apply(&self, ctx: &egui::Context) {
         ctx.set_theme(if self.dark {
             egui::Theme::Dark
@@ -179,8 +223,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_theme_is_green_on_black() {
-        let theme = Theme::by_name(DEFAULT_THEME);
+    fn default_terminal_theme_is_green_on_black() {
+        let theme = Theme::terminal(DEFAULT_THEME);
         assert!(theme.dark);
         assert_eq!(theme.bg, Color32::BLACK);
         let [r, g, b, _] = theme.text.to_array();
@@ -188,14 +232,28 @@ mod tests {
     }
 
     #[test]
+    fn app_looks_are_not_black_or_green_text() {
+        assert_ne!(UI_DARK.bg, Color32::BLACK);
+        const { assert!(UI_DARK.dark && !UI_LIGHT.dark) };
+        for theme in [UI_DARK, UI_LIGHT] {
+            let [r, g, b, _] = theme.text.to_array();
+            assert!(
+                g.abs_diff(r) < 16 && g.abs_diff(b) < 16,
+                "{} text is grey",
+                theme.name
+            );
+        }
+    }
+
+    #[test]
     fn unknown_theme_falls_back_to_default() {
-        assert_eq!(Theme::by_name("missing").name, DEFAULT_THEME);
+        assert_eq!(Theme::terminal("missing").name, DEFAULT_THEME);
     }
 
     #[test]
     fn theme_names_are_unique() {
-        for (i, a) in THEMES.iter().enumerate() {
-            assert!(THEMES[i + 1..].iter().all(|b| a.name != b.name));
+        for (i, a) in TERMINAL_THEMES.iter().enumerate() {
+            assert!(TERMINAL_THEMES[i + 1..].iter().all(|b| a.name != b.name));
         }
     }
 
@@ -218,7 +276,7 @@ mod tests {
             let (la, lb) = (luminance(a), luminance(b));
             (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
         }
-        for theme in THEMES {
+        for theme in TERMINAL_THEMES.iter().chain([&UI_DARK, &UI_LIGHT]) {
             for bg in [theme.bg, theme.panel, theme.surface] {
                 assert!(contrast(theme.text, bg) >= 4.5, "{} text", theme.name);
                 assert!(contrast(theme.text_dim, bg) >= 4.5, "{} dim", theme.name);

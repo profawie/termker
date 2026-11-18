@@ -10,8 +10,8 @@ pub mod time;
 
 pub const APP_NAME: &str = "termker";
 
-/// Theme used until the user picks another one. The themes themselves live
-/// in the app, which draws them.
+/// Terminal color theme used until the user picks another one. The themes
+/// themselves live in the app, which draws them.
 pub const DEFAULT_THEME: &str = "Phosphor";
 
 /// Helpers for tests, here and in the other termker crates.

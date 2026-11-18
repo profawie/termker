@@ -19,6 +19,7 @@ pub enum SessionAction {
 
 pub fn show(app: &mut App, ui: &mut egui::Ui, index: usize) -> SessionAction {
     let theme = app.theme;
+    let terminal_theme = app.terminal_theme;
     let font_size = app.data.settings.terminal_font_size;
     let session = &mut app.sessions[index];
     let mut action = SessionAction::None;
@@ -77,7 +78,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, index: usize) -> SessionAction {
         });
 
     egui::CentralPanel::default()
-        .frame(egui::Frame::new().fill(theme.bg))
+        .frame(egui::Frame::new().fill(terminal_theme.bg))
         .show(ui, |ui| {
             if let SessionState::Closed(Some(error)) = &session.state {
                 notice(ui, &theme, error);
@@ -90,7 +91,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, index: usize) -> SessionAction {
                         prompt_card(ui, &theme, &mut session.prompt, &mut session.secret_input);
                     });
             }
-            super::terminal::show(ui, session, &theme, font_size, !prompting);
+            super::terminal::show(ui, session, &terminal_theme, font_size, !prompting);
         });
 
     action
