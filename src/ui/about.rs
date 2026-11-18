@@ -11,7 +11,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         ui,
         &theme,
         "About",
-        "What rterminalfy is built from, so you can verify it yourself.",
+        "What termker is built from, so you can verify it yourself.",
     );
 
     super::card(&theme).show(ui, |ui| {

@@ -3,6 +3,6 @@
 *.swp
 /dist
 # Programs the build scripts copy next to themselves
-/rterminalfy
-/rterminalfy.exe
-/rterminalfy.app
+/termker
+/termker.exe
+/termker.app

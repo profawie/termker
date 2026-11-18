@@ -1,6 +1,6 @@
 //! Trusted host keys, in the OpenSSH `known_hosts` format.
 //!
-//! The file belongs to rterminalfy (in its config folder), so the user's
+//! The file belongs to termker (in its config folder), so the user's
 //! `~/.ssh/known_hosts` is never modified.
 
 use std::{fs, io, path::PathBuf};
@@ -122,7 +122,7 @@ mod tests {
     fn store(name: &str) -> KnownHosts {
         KnownHosts::new(
             std::env::temp_dir()
-                .join(format!("rterminalfy-kh-{}-{name}", uuid::Uuid::new_v4()))
+                .join(format!("termker-kh-{}-{name}", uuid::Uuid::new_v4()))
                 .join("known_hosts"),
         )
     }

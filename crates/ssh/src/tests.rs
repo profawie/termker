@@ -259,7 +259,7 @@ pub(crate) fn hop(name: &str, port: u16) -> Hop {
     }
 }
 
-pub(crate) use rterminalfy_core::testing::temp_dir;
+pub(crate) use termker_core::testing::temp_dir;
 
 pub(crate) fn known_hosts(name: &str) -> KnownHosts {
     KnownHosts::new(temp_dir(name).join("known_hosts"))
@@ -469,12 +469,12 @@ async fn target_is_reached_through_the_jump_host() {
 }
 
 /// A keychain with one generated key, used by a host through an identity.
-fn keychain_fixture(name: &str, port: u16) -> (rterminalfy_core::model::Data, Host, KeyStore) {
-    use rterminalfy_core::model::{Data, Identity};
+fn keychain_fixture(name: &str, port: u16) -> (termker_core::model::Data, Host, KeyStore) {
+    use termker_core::model::{Data, Identity};
     let store = KeyStore::new(temp_dir(name).join("keys"));
-    let entry = rterminalfy_core::keychain::generate(
+    let entry = termker_core::keychain::generate(
         &store,
-        rterminalfy_core::keychain::KeyKind::Ed25519,
+        termker_core::keychain::KeyKind::Ed25519,
         "laptop",
         "",
     )
@@ -561,7 +561,7 @@ async fn certificate_is_presented_and_plain_key_is_the_fallback() {
     let answers = Answers::new(true, &[]);
 
     data.keys[0].certificate =
-        Some(rterminalfy_core::keychain::check_certificate(&sign("alice"), &data.keys[0]).unwrap());
+        Some(termker_core::keychain::check_certificate(&sign("alice"), &data.keys[0]).unwrap());
     let connection = connect(
         &hops(&data, &host, &store).unwrap(),
         &known,
@@ -610,7 +610,7 @@ async fn remembered_password_is_reused_and_dropped_when_it_stops_working() {
     let known = known_hosts("saved-password");
     let hops = [hop("a", port)];
     let secrets = SecretStore::memory();
-    let key = rterminalfy_core::secrets::password_key("tester", "127.0.0.1", port);
+    let key = termker_core::secrets::password_key("tester", "127.0.0.1", port);
 
     // Without the tick box nothing is saved.
     let mut answers = Answers::new(true, &[PASSWORD]);
@@ -667,7 +667,7 @@ async fn saved_password_is_not_sent_to_a_host_whose_key_changed() {
 
     // A password is saved for this address, but the key on record for it
     // belongs to a different server.
-    let key = rterminalfy_core::secrets::password_key("tester", "127.0.0.1", port);
+    let key = termker_core::secrets::password_key("tester", "127.0.0.1", port);
     secrets.save(&key, "saved", PASSWORD).unwrap();
     let other = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
     known.trust("127.0.0.1", port, other.public_key()).unwrap();
@@ -732,7 +732,7 @@ fn hops_report_a_key_that_left_the_keychain() {
     let (mut data, mut host, store) = keychain_fixture("identity-missing", 22);
     let key = data.keys.remove(0).id;
     host.identity = None;
-    host.auth = rterminalfy_core::model::AuthMethod::Key { key };
+    host.auth = termker_core::model::AuthMethod::Key { key };
     let error = hops(&data, &host, &store).unwrap_err();
     assert_eq!(error, "The key for a is no longer in the keychain.");
 }

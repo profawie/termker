@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Builds rterminalfy for Windows with the GNU toolchain (MinGW-w64).
+    Builds termker for Windows with the GNU toolchain (MinGW-w64).
 
 .DESCRIPTION
     Needs no Visual Studio or Microsoft build tools. Needs:
@@ -9,7 +9,7 @@
 
     The script installs Rust's GNU toolchain through rustup when it is
     missing, builds a release, packages it as a .zip in dist\, and copies
-    rterminalfy.exe to the folder this script is in.
+    termker.exe to the folder this script is in.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\build.ps1
@@ -21,7 +21,7 @@ param()
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 
-$App = 'rterminalfy'
+$App = 'termker'
 $Toolchain = 'stable-x86_64-pc-windows-gnu'
 $Target = 'x86_64-pc-windows-gnu'
 
@@ -113,11 +113,11 @@ New-Item -ItemType Directory -Path $stage -Force | Out-Null
 $exe = "target\$Target\release\$App.exe"
 Copy-Item -LiteralPath $exe -Destination $stage
 # Also put the program next to this script, so it can be run straight away.
-# Windows locks a running .exe, so this fails while rterminalfy is open.
+# Windows locks a running .exe, so this fails while termker is open.
 try {
     Copy-Item -LiteralPath $exe -Destination (Join-Path $PSScriptRoot "$App.exe") -Force
 } catch {
-    Fail "could not replace $App.exe in $PSScriptRoot. Close rterminalfy and run this script again."
+    Fail "could not replace $App.exe in $PSScriptRoot. Close termker and run this script again."
 }
 Copy-Item -LiteralPath 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE' -Destination $stage
 Compress-Archive -LiteralPath $stage -DestinationPath $zip

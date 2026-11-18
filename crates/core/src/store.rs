@@ -11,8 +11,8 @@ pub struct Store {
 }
 
 impl Store {
-    /// Store at the OS default location, e.g. `%APPDATA%\rterminalfy\config`
-    /// on Windows and `~/Library/Application Support/rterminalfy` on macOS.
+    /// Store at the OS default location, e.g. `%APPDATA%\termker\config`
+    /// on Windows and `~/Library/Application Support/termker` on macOS.
     pub fn open_default() -> Self {
         let path = directories::ProjectDirs::from("", "", crate::APP_NAME)
             .map(|dirs| dirs.config_dir().join("data.json"));
@@ -64,7 +64,7 @@ mod tests {
 
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir()
-            .join(format!("rterminalfy-test-{}-{name}", uuid::Uuid::new_v4()))
+            .join(format!("termker-test-{}-{name}", uuid::Uuid::new_v4()))
             .join("data.json")
     }
 

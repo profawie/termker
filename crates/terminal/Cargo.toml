@@ -1,6 +1,6 @@
 [package]
-name = "rterminalfy-terminal"
-description = "rterminalfy's terminal emulator and interactive shell sessions"
+name = "termker-terminal"
+description = "termker's terminal emulator and interactive shell sessions"
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -10,7 +10,7 @@ rust-version.workspace = true
 
 [dependencies]
 alacritty_terminal.workspace = true
-rterminalfy-core.workspace = true
-rterminalfy-ssh.workspace = true
+termker-core.workspace = true
+termker-ssh.workspace = true
 tokio.workspace = true
 uuid.workspace = true

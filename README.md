@@ -1,4 +1,4 @@
-# rterminalfy
+# termker
 
 A desktop SSH client for individuals, written entirely in Rust. Runs on Windows and macOS.
 
@@ -51,8 +51,8 @@ tools are needed:
    ```
 
 The script installs Rust's `stable-x86_64-pc-windows-gnu` toolchain if it is
-missing, writes `dist\rterminalfy-<version>-windows-x86_64.zip`, and copies
-`rterminalfy.exe` to the repository folder. The `.exe` needs no other files.
+missing, writes `dist\termker-<version>-windows-x86_64.zip`, and copies
+`termker.exe` to the repository folder. The `.exe` needs no other files.
 
 **macOS and Linux:**
 
@@ -61,8 +61,8 @@ missing, writes `dist\rterminalfy-<version>-windows-x86_64.zip`, and copies
 ./build.sh --windows   # Windows .zip, cross-built with MinGW-w64
 ```
 
-Both also copy the program to the repository folder (`rterminalfy`,
-`rterminalfy.app` or `rterminalfy.exe`). The macOS app is not signed. On first launch, right-click it and choose Open.
+Both also copy the program to the repository folder (`termker`,
+`termker.app` or `termker.exe`). The macOS app is not signed. On first launch, right-click it and choose Open.
 
 ## Tests
 
@@ -79,22 +79,27 @@ only keep the parts separate.
 
 | Crate | What it does |
 | --- | --- |
-| `rterminalfy` (`src/`) | The desktop app: windows, pages, themes, About screen |
-| `rterminalfy-core` (`crates/core`) | Saved hosts and settings, keychain keys and identities, saved passwords |
-| `rterminalfy-ssh` (`crates/ssh`) | SSH connections, host keys, jump hosts, port forwarding, SFTP |
-| `rterminalfy-terminal` (`crates/terminal`) | Terminal emulator and interactive shell sessions |
+| `termker` (`src/`) | The desktop app: windows, pages, themes, About screen |
+| `termker-core` (`crates/core`) | Saved hosts and settings, keychain keys and identities, saved passwords |
+| `termker-ssh` (`crates/ssh`) | SSH connections, host keys, jump hosts, port forwarding, SFTP |
+| `termker-terminal` (`crates/terminal`) | Terminal emulator and interactive shell sessions |
 
 Each crate only depends on the ones below it in this list: the app uses all
-three, `rterminalfy-terminal` uses `ssh` and `core`, and `rterminalfy-ssh`
+three, `termker-terminal` uses `ssh` and `core`, and `termker-ssh`
 uses `core`. Third-party libraries are declared once, under
 `[workspace.dependencies]` in the root `Cargo.toml`.
 
 ## Data
 
 Hosts and settings are stored as JSON in the per-user config folder
-(`%APPDATA%\rterminalfy\config\data.json` on Windows,
-`~/Library/Application Support/rterminalfy/data.json` on macOS).
+(`%APPDATA%\termker\config\data.json` on Windows,
+`~/Library/Application Support/termker/data.json` on macOS).
 Passwords and private keys are never written to this file.
+
+This app was called rterminalfy before. On first start, termker moves the
+old `rterminalfy` folder to its own folder and moves saved passwords to its
+own credential store entries, then says so at the top of the window. If a
+`termker` folder already exists, nothing is moved or overwritten.
 
 Passwords and key passphrases are asked for when connecting. If you tick
 "Remember", they are saved in the operating system's credential store

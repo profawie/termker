@@ -8,7 +8,7 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/profawie/rterminalfy"
+repository = "https://github.com/profawie/termker"
 rust-version = "1.92"
 
 # Every third-party library, in one place. The About screen lists exactly
@@ -28,12 +28,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros",
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # The app's own crates.
-rterminalfy-core = { path = "crates/core" }
-rterminalfy-ssh = { path = "crates/ssh" }
-rterminalfy-terminal = { path = "crates/terminal" }
+termker-core = { path = "crates/core" }
+termker-ssh = { path = "crates/ssh" }
+termker-terminal = { path = "crates/terminal" }
 
 [package]
-name = "rterminalfy"
+name = "termker"
 description = "Desktop SSH client for individuals, written entirely in Rust"
 version.workspace = true
 edition.workspace = true
@@ -45,9 +45,9 @@ rust-version.workspace = true
 alacritty_terminal.workspace = true
 eframe.workspace = true
 rfd.workspace = true
-rterminalfy-core.workspace = true
-rterminalfy-ssh.workspace = true
-rterminalfy-terminal.workspace = true
+termker-core.workspace = true
+termker-ssh.workspace = true
+termker-terminal.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 

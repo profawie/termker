@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Build a release of rterminalfy and package it in dist/.
+# Build a release of termker and package it in dist/.
 #
 #   ./build.sh            build for this computer (macOS or Linux)
 #   ./build.sh --windows  build a Windows .exe with the GNU toolchain
 #                         (MinGW-w64), from macOS or Linux
 #
-# The program is also copied to this folder: rterminalfy (Linux),
-# rterminalfy.app (macOS) or rterminalfy.exe (Windows).
+# The program is also copied to this folder: termker (Linux),
+# termker.app (macOS) or termker.exe (Windows).
 #
 # On Windows itself, use build.ps1 instead.
 
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP=rterminalfy
+APP=termker
 WINDOWS_TARGET=x86_64-pc-windows-gnu
 
 usage() {
