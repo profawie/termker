@@ -318,7 +318,7 @@ fn certificate_state(info: &CertificateInfo) -> (String, bool) {
 fn key_card(ui: &mut egui::Ui, theme: &Theme, key: &KeyEntry, selected: bool) -> bool {
     let mut frame = super::card(theme);
     if selected {
-        frame = frame.stroke(egui::Stroke::new(1.5, theme.accent));
+        frame = frame.stroke(egui::Stroke::new(1.5, theme.accent_text));
     }
     let mut open = false;
     frame.show(ui, |ui| {
@@ -377,7 +377,7 @@ fn identity_card(ui: &mut egui::Ui, app: &App, identity: &Identity, selected: bo
     let theme = app.theme;
     let mut frame = super::card(&theme);
     if selected {
-        frame = frame.stroke(egui::Stroke::new(1.5, theme.accent));
+        frame = frame.stroke(egui::Stroke::new(1.5, theme.accent_text));
     }
     let mut open = false;
     frame.show(ui, |ui| {
@@ -670,7 +670,7 @@ fn key_form(ui: &mut egui::Ui, app: &mut App, form: &mut KeyForm) -> Next {
 
     if let Some(info) = &form.info {
         ui.add_space(4.0);
-        ui.label(RichText::new(info).color(theme.accent));
+        ui.label(RichText::new(info).color(theme.accent_text));
     }
     if let Some(error) = &form.error {
         ui.add_space(4.0);
@@ -801,7 +801,11 @@ fn certificate_section(ui: &mut egui::Ui, app: &mut App, form: &mut KeyForm, key
     match key.certificate.as_deref().and_then(CertificateInfo::parse) {
         Some(info) => {
             let (state, problem) = certificate_state(&info);
-            let color = if problem { theme.danger } else { theme.accent };
+            let color = if problem {
+                theme.danger
+            } else {
+                theme.accent_text
+            };
             ui.label(RichText::new(state).color(color));
             egui::Grid::new("certificate_details")
                 .num_columns(2)

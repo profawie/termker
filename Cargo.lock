@@ -4694,7 +4694,7 @@ dependencies = [
 
 [[package]]
 name = "termker"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "alacritty_terminal",
  "eframe",
@@ -4708,7 +4708,7 @@ dependencies = [
 
 [[package]]
 name = "termker-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "directories",
  "keyring",
@@ -4721,7 +4721,7 @@ dependencies = [
 
 [[package]]
 name = "termker-ssh"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "directories",
  "rand",
@@ -4734,7 +4734,7 @@ dependencies = [
 
 [[package]]
 name = "termker-terminal"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "alacritty_terminal",
  "termker-core",

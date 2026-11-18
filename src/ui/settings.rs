@@ -76,7 +76,7 @@ fn swatch(ui: &mut egui::Ui, theme: &Theme, selected: bool) -> egui::Response {
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     let painter = ui.painter_at(rect);
     let border = if selected || response.hovered() {
-        egui::Stroke::new(2.0, theme.accent)
+        egui::Stroke::new(2.0, theme.accent_text)
     } else {
         egui::Stroke::new(1.0, theme.border)
     };

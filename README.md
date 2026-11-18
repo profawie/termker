@@ -2,24 +2,25 @@
 
 A desktop SSH client for individuals, written entirely in Rust. Runs on Windows and macOS.
 
-Version: 0.1.0
+Version: 0.2.0
 
 | Dark | Light |
 | --- | --- |
 | ![Hosts page in dark mode](docs/screenshots/hosts-dark.png) | ![Hosts page in light mode](docs/screenshots/hosts-light.png) |
 | ![Settings in dark mode](docs/screenshots/settings-dark.png) | ![Terminal session in light mode](docs/screenshots/terminal-light.png) |
+| ![SFTP with two panes](docs/screenshots/sftp-dark.png) | ![About screen with the library list](docs/screenshots/about-dark.png) |
 
 ## Features
 
 | Feature | Status |
 | --- | --- |
-| Host management with groups and search | Done |
+| Host management with search and groups, including groups inside groups (Client > Prod > server), that you can add, rename, collapse and delete | Done |
 | Dark, light or system appearance for the app; separate terminal color themes (default: green text on black) | Done |
 | About screen listing every library, its version and website | Done |
 | SSH terminal (password or key file) with host key verification | Done |
 | Jump server (ProxyJump), any number of hops | Done |
 | Port forwarding: local, remote and dynamic (SOCKS5) | Done |
-| SFTP: browse, upload, download, rename, delete, new folder | Done |
+| SFTP: two panes side by side, each showing this computer or a host; transfer files and folders between them, including host to host; rename, delete, new folder | Done |
 | Keychain: generate and import keys (ED25519, ECDSA, RSA), identities, OpenSSH user certificates | Done |
 | Saved passwords and passphrases in the OS credential store (opt-in) | Done |
 | FIDO2 security keys | Planned |

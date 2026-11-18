@@ -321,7 +321,7 @@ fn empty_state(ui: &mut egui::Ui, app: &App, title: &str, text: &str) {
             RichText::new("<->")
                 .monospace()
                 .size(36.0)
-                .color(theme.accent),
+                .color(theme.accent_text),
         );
         ui.label(RichText::new(title).size(18.0).strong());
         ui.label(RichText::new(text).color(theme.text_dim));
@@ -355,7 +355,7 @@ fn row(ui: &mut egui::Ui, app: &mut App, index: usize, selected: bool) -> Option
 
     let mut frame = super::card(&theme);
     if selected {
-        frame = frame.stroke(egui::Stroke::new(1.5, theme.accent));
+        frame = frame.stroke(egui::Stroke::new(1.5, theme.accent_text));
     }
     let mut action = None;
     frame.show(ui, |ui| {
@@ -371,7 +371,7 @@ fn row(ui: &mut egui::Ui, app: &mut App, index: usize, selected: bool) -> Option
                     "connections"
                 };
                 (
-                    theme.accent,
+                    theme.accent_text,
                     format!("Listening on port {port}, {connections} {noun}"),
                 )
             }

@@ -34,7 +34,11 @@ impl Store {
             return Ok(Data::default());
         };
         match fs::read_to_string(path) {
-            Ok(text) => serde_json::from_str(&text)
+            Ok(text) => serde_json::from_str::<Data>(&text)
+                .map(|mut data| {
+                    data.sync_groups();
+                    data
+                })
                 .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err)),
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Data::default()),
             Err(err) => Err(err),
