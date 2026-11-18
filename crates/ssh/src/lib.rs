@@ -3,6 +3,7 @@
 
 pub mod forward;
 pub mod known_hosts;
+pub mod sftp;
 pub mod socks;
 
 use std::{fmt, io, path::PathBuf, sync::Arc, time::Duration};
@@ -14,13 +15,13 @@ use russh::{
 };
 use tokio::sync::{mpsc, oneshot};
 
-pub use crate::secrets::SecretStore;
-use crate::{
+pub use known_hosts::{HostKeyStatus, KnownHosts};
+pub use rterminalfy_core::secrets::SecretStore;
+use rterminalfy_core::{
     keychain::KeyStore,
     model::{AuthMethod, Data, Host},
     secrets,
 };
-pub use known_hosts::{HostKeyStatus, KnownHosts};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);

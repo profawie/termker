@@ -20,7 +20,7 @@ use russh_sftp::protocol::{
 use tokio::net::TcpListener;
 
 use super::*;
-use crate::ssh::tests::{Answers, PASSWORD, hop, known_hosts, temp_dir};
+use crate::tests::{Answers, PASSWORD, hop, known_hosts, temp_dir};
 
 #[derive(Clone)]
 struct TestServer {
@@ -309,7 +309,7 @@ impl Fixture {
             &tokio::runtime::Handle::current(),
             vec![hop("a", port)],
             known_hosts(name),
-            crate::secrets::SecretStore::disabled(),
+            rterminalfy_core::secrets::SecretStore::disabled(),
             || {},
         );
         let mut fixture = Self {

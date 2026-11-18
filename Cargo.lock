@@ -3921,15 +3921,48 @@ name = "rterminalfy"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
- "directories",
  "eframe",
+ "rfd",
+ "rterminalfy-core",
+ "rterminalfy-ssh",
+ "rterminalfy-terminal",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "rterminalfy-core"
+version = "0.1.0"
+dependencies = [
+ "directories",
  "keyring",
  "rand",
- "rfd",
  "russh",
- "russh-sftp",
  "serde",
  "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "rterminalfy-ssh"
+version = "0.1.0"
+dependencies = [
+ "directories",
+ "rand",
+ "rterminalfy-core",
+ "russh",
+ "russh-sftp",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "rterminalfy-terminal"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "rterminalfy-core",
+ "rterminalfy-ssh",
  "tokio",
  "uuid",
 ]

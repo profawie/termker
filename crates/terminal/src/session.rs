@@ -3,11 +3,12 @@
 
 use uuid::Uuid;
 
-use crate::{
-    secrets::SecretStore,
-    ssh::{self, Hop, KnownHosts, Prompt, SessionCommand, SessionEvent, SessionHandle},
-    terminal::{Emulator, Size},
+use rterminalfy_core::secrets::SecretStore;
+use rterminalfy_ssh::{
+    self as ssh, Hop, KnownHosts, Prompt, SessionCommand, SessionEvent, SessionHandle,
 };
+
+use crate::emulator::{Emulator, Size};
 
 const INITIAL_SIZE: Size = Size { cols: 80, rows: 24 };
 
