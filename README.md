@@ -27,6 +27,37 @@ Requires [Rust](https://rustup.rs) 1.92 or newer.
 cargo run --release
 ```
 
+### Release packages
+
+The build scripts make a release build and package it in `dist/`.
+
+**Windows**, with the GNU toolchain, so no Visual Studio or Microsoft build
+tools are needed:
+
+1. Install rustup from [rustup.rs](https://rustup.rs). If it is not installed
+   yet, run the installer as `rustup-init.exe --default-host x86_64-pc-windows-gnu -y`.
+2. Install a 64-bit MinGW-w64 gcc (MSVCRT build), for example
+   `winget install -e --id BrechtSanders.WinLibs.POSIX.MSVCRT`, or MSYS2 with
+   `pacman -S mingw-w64-x86_64-gcc`. Open a new terminal afterwards.
+3. Run:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\build.ps1
+   ```
+
+The script installs Rust's `stable-x86_64-pc-windows-gnu` toolchain if it is
+missing and writes `dist\rterminalfy-<version>-windows-x86_64.zip`. The `.exe`
+inside needs no other files.
+
+**macOS and Linux:**
+
+```
+./build.sh             # .app in a .zip on macOS, .tar.gz on Linux
+./build.sh --windows   # Windows .zip, cross-built with MinGW-w64
+```
+
+The macOS app is not signed. On first launch, right-click it and choose Open.
+
 ## Tests
 
 ```
