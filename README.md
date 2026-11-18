@@ -24,8 +24,13 @@ Version: 0.1.0
 Requires [Rust](https://rustup.rs) 1.92 or newer.
 
 ```
-cargo run --release
+./run.sh                                              # macOS and Linux
+powershell -ExecutionPolicy Bypass -File .\run.ps1    # Windows, GNU toolchain
 ```
+
+Both make a debug build, which compiles faster; add `--release` (`-Release`
+for `run.ps1`) for an optimized build. `run.ps1` has the same requirements as
+`build.ps1` below and needs no Microsoft build tools.
 
 ### Release packages
 
