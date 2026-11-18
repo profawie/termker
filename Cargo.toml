@@ -51,6 +51,13 @@ rterminalfy-terminal.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 
+# Release builds favour a small program. Measured on the Windows build
+# (x86_64-pc-windows-gnu): 23.5 MB with thin LTO, 17.3 MB with fat LTO and
+# one codegen unit, 13.2 MB when also optimizing for size. Network and disk
+# speed limit an SSH client long before code speed does. Panics still
+# unwind, so a failing background task does not take the whole app down.
 [profile.release]
-lto = "thin"
+lto = "fat"
+codegen-units = 1
+opt-level = "s"
 strip = true
