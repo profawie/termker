@@ -759,6 +759,40 @@ impl Data {
         self.forwards.retain(|forward| forward.id != id);
     }
 
+    /// A copy of `host` under a new id, with a label no other host has:
+    /// `web (copy)`, then `web (copy 2)` and so on. It is not added here;
+    /// pass it to [`Data::upsert_host`].
+    pub fn duplicate_of(&self, host: &Host) -> Host {
+        // A copy of a copy is numbered from the first name, not `(copy) (copy)`.
+        let name = host.display_name().trim();
+        let base = match name.rfind(" (copy") {
+            Some(at) if name.ends_with(')') => {
+                let number = &name[at + " (copy".len()..name.len() - 1];
+                let numbered = number
+                    .strip_prefix(' ')
+                    .is_some_and(|digits| digits.parse::<u32>().is_ok());
+                if number.is_empty() || numbered {
+                    &name[..at]
+                } else {
+                    name
+                }
+            }
+            _ => name,
+        };
+        let taken = |label: &str| self.hosts.iter().any(|other| other.display_name() == label);
+        let mut label = format!("{base} (copy)");
+        let mut count = 2;
+        while taken(&label) {
+            label = format!("{base} (copy {count})");
+            count += 1;
+        }
+        Host {
+            id: Uuid::new_v4(),
+            label,
+            ..host.clone()
+        }
+    }
+
     /// Delete a host, its forwards, and jump host references to it.
     pub fn remove_host(&mut self, id: Uuid) {
         self.hosts.retain(|host| host.id != id);
@@ -774,6 +808,37 @@ impl Data {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicate_gets_a_new_id_and_a_free_label() {
+        let mut data = Data::default();
+        let mut host = Host::new();
+        host.label = "web".into();
+        host.address = "10.0.0.1".into();
+        host.group = "Client/Prod".into();
+        data.upsert_host(host.clone()).unwrap();
+
+        let first = data.duplicate_of(&host);
+        assert_ne!(first.id, host.id);
+        assert_eq!(first.label, "web (copy)");
+        assert_eq!(first.address, host.address);
+        assert_eq!(first.group, host.group);
+        data.upsert_host(first).unwrap();
+
+        let second = data.duplicate_of(&host);
+        assert_eq!(second.label, "web (copy 2)");
+
+        // A copy of a copy takes the next free number.
+        let copy = data.hosts[1].clone();
+        assert_eq!(data.duplicate_of(&copy).label, "web (copy 2)");
+        let mut odd = host.clone();
+        odd.label = "web (copy me)".into();
+        assert_eq!(data.duplicate_of(&odd).label, "web (copy me) (copy)");
+
+        // Without a label the address is used as the name.
+        host.label.clear();
+        assert_eq!(data.duplicate_of(&host).label, "10.0.0.1 (copy)");
+    }
 
     fn host(label: &str) -> Host {
         Host {
