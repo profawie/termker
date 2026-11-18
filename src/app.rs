@@ -490,40 +490,77 @@ impl App {
         };
         let name = session.name.clone();
         let mut close = false;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            let close_width = 26.0;
-            let text_color = if selected {
-                theme.on_accent
-            } else {
+        // The row is laid out by hand so that every row is exactly as wide
+        // as the sidebar: the name starts at the same place and the close
+        // button sits at the same right edge on every row.
+        let close_width = 26.0;
+        let (row, response) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::click());
+        let close_rect = egui::Rect::from_min_max(
+            egui::pos2(row.right() - close_width, row.top()),
+            row.right_bottom(),
+        );
+        let close_response = ui
+            .interact(close_rect, response.id.with("close"), egui::Sense::click())
+            .on_hover_text("Close session");
+        let name_rect = egui::Rect::from_min_max(
+            row.left_top(),
+            egui::pos2(close_rect.left() - 4.0, row.bottom()),
+        );
+
+        let painter = ui.painter();
+        if selected {
+            painter.rect_filled(name_rect, 6.0, theme.accent);
+        } else if response.hovered() && !close_response.hovered() {
+            painter.rect_filled(name_rect, 6.0, theme.border);
+        }
+        if close_response.hovered() {
+            painter.rect_filled(close_rect, 6.0, theme.border);
+        }
+        painter.circle_filled(
+            egui::pos2(name_rect.left() + 14.0, name_rect.center().y),
+            4.0,
+            if selected { theme.on_accent } else { dot },
+        );
+        let (text_color, close_color) = if selected {
+            (theme.on_accent, theme.text)
+        } else {
+            (theme.text, theme.text_dim)
+        };
+        painter.text(
+            close_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "x",
+            egui::TextStyle::Button.resolve(ui.style()),
+            if close_response.hovered() {
                 theme.text
-            };
-            let mut button =
-                egui::Button::new(RichText::new(format!("    {name}")).color(text_color))
-                    .min_size(egui::vec2(ui.available_width() - close_width - 4.0, 30.0))
-                    .truncate()
-                    .frame_when_inactive(false);
-            if selected {
-                button = button.fill(theme.accent).frame_when_inactive(true);
-            }
-            let response = ui.add(button);
-            let center = egui::pos2(response.rect.left() + 14.0, response.rect.center().y);
-            ui.painter()
-                .circle_filled(center, 4.0, if selected { theme.on_accent } else { dot });
-            if response.clicked() {
-                self.page = page;
-            }
-            let close_button = egui::Button::new("x")
-                .min_size(egui::vec2(close_width, 30.0))
-                .frame_when_inactive(false);
-            if ui
-                .add(close_button)
-                .on_hover_text("Close session")
-                .clicked()
-            {
-                close = true;
-            }
-        });
+            } else {
+                close_color
+            },
+        );
+        // The name, cut short with "…" when it does not fit.
+        let text_rect = egui::Rect::from_min_max(
+            egui::pos2(name_rect.left() + 28.0, name_rect.top()),
+            egui::pos2(name_rect.right() - 6.0, name_rect.bottom()),
+        );
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            name,
+            egui::TextStyle::Button.resolve(ui.style()),
+            text_color,
+        );
+        job.wrap = egui::text::TextWrapping::truncate_at_width(text_rect.width());
+        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+        let at = egui::pos2(
+            text_rect.left(),
+            text_rect.center().y - galley.size().y / 2.0,
+        );
+        ui.painter().galley(at, galley, text_color);
+
+        if close_response.clicked() {
+            close = true;
+        } else if response.clicked() {
+            self.page = page;
+        }
         close
     }
 
