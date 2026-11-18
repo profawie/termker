@@ -46,8 +46,8 @@ tools are needed:
    ```
 
 The script installs Rust's `stable-x86_64-pc-windows-gnu` toolchain if it is
-missing and writes `dist\rterminalfy-<version>-windows-x86_64.zip`. The `.exe`
-inside needs no other files.
+missing, writes `dist\rterminalfy-<version>-windows-x86_64.zip`, and copies
+`rterminalfy.exe` to the repository folder. The `.exe` needs no other files.
 
 **macOS and Linux:**
 
@@ -56,7 +56,8 @@ inside needs no other files.
 ./build.sh --windows   # Windows .zip, cross-built with MinGW-w64
 ```
 
-The macOS app is not signed. On first launch, right-click it and choose Open.
+Both also copy the program to the repository folder (`rterminalfy`,
+`rterminalfy.app` or `rterminalfy.exe`). The macOS app is not signed. On first launch, right-click it and choose Open.
 
 ## Tests
 
