@@ -84,7 +84,7 @@ mod tests {
             ..Host::new()
         })
         .unwrap();
-        data.settings.theme = "Amber".into();
+        data.settings.terminal_theme = "Amber".into();
         store.save(&data).unwrap();
         assert_eq!(store.load().unwrap(), data);
         fs::remove_dir_all(store.path().unwrap().parent().unwrap()).unwrap();
