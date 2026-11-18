@@ -5,6 +5,9 @@
 #   ./build.sh --windows  build a Windows .exe with the GNU toolchain
 #                         (MinGW-w64), from macOS or Linux
 #
+# The program is also copied to this folder: rterminalfy (Linux),
+# rterminalfy.app (macOS) or rterminalfy.exe (Windows).
+#
 # On Windows itself, use build.ps1 instead.
 
 set -euo pipefail
@@ -14,7 +17,7 @@ APP=rterminalfy
 WINDOWS_TARGET=x86_64-pc-windows-gnu
 
 usage() {
-    sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 fail() {
@@ -63,9 +66,10 @@ build_windows() {
     rm -rf "$stage" "dist/$name.zip"
     mkdir -p "$stage"
     cp "target/$WINDOWS_TARGET/release/$APP.exe" README.md LICENSE-MIT LICENSE-APACHE "$stage/"
+    cp "target/$WINDOWS_TARGET/release/$APP.exe" "./$APP.exe"
     (cd dist && make_zip "$name.zip" "$name")
     rm -rf "$stage"
-    echo "Built dist/$name.zip"
+    echo "Built dist/$name.zip and copied $APP.exe here"
 }
 
 build_macos() {
@@ -98,10 +102,12 @@ build_macos() {
 </plist>
 PLIST
     cp README.md LICENSE-MIT LICENSE-APACHE "$stage/"
+    rm -rf "./$APP.app"
+    cp -R "$bundle" "./$APP.app"
     # ditto keeps the bundle's permissions and extended attributes intact.
     (cd dist && ditto -c -k --keepParent "$name" "$name.zip")
     rm -rf "$stage"
-    echo "Built dist/$name.zip"
+    echo "Built dist/$name.zip and copied $APP.app here"
     echo "The app is not signed. On first launch, right-click it and choose Open."
 }
 
@@ -115,9 +121,10 @@ build_linux() {
     rm -rf "$stage" "dist/$name.tar.gz"
     mkdir -p "$stage"
     cp "target/release/$APP" README.md LICENSE-MIT LICENSE-APACHE "$stage/"
+    cp "target/release/$APP" "./$APP"
     tar -C dist -czf "dist/$name.tar.gz" "$name"
     rm -rf "$stage"
-    echo "Built dist/$name.tar.gz"
+    echo "Built dist/$name.tar.gz and copied $APP here"
 }
 
 case "${1:-}" in

@@ -8,7 +8,8 @@
       - a 64-bit MinGW-w64 gcc on PATH, MSVCRT flavour
 
     The script installs Rust's GNU toolchain through rustup when it is
-    missing, builds a release, and packages it as a .zip in dist\.
+    missing, builds a release, packages it as a .zip in dist\, and copies
+    rterminalfy.exe to the folder this script is in.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\build.ps1
@@ -109,10 +110,18 @@ if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -F
 if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 
-Copy-Item -LiteralPath "target\$Target\release\$App.exe" -Destination $stage
+$exe = "target\$Target\release\$App.exe"
+Copy-Item -LiteralPath $exe -Destination $stage
+# Also put the program next to this script, so it can be run straight away.
+# Windows locks a running .exe, so this fails while rterminalfy is open.
+try {
+    Copy-Item -LiteralPath $exe -Destination (Join-Path $PSScriptRoot "$App.exe") -Force
+} catch {
+    Fail "could not replace $App.exe in $PSScriptRoot. Close rterminalfy and run this script again."
+}
 Copy-Item -LiteralPath 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE' -Destination $stage
 Compress-Archive -LiteralPath $stage -DestinationPath $zip
 Remove-Item -LiteralPath $stage -Recurse -Force
 
 Write-Host "Built $zip" -ForegroundColor Green
-Write-Host "The program is $App.exe inside it. It needs no other files."
+Write-Host "Copied the program to $(Join-Path $PSScriptRoot "$App.exe"). It needs no other files."
