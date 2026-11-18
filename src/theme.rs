@@ -155,6 +155,23 @@ impl Theme {
             .expect("default theme exists")
     }
 
+    /// This terminal theme with the user's own text and background colors,
+    /// where set. The theme's other colors (cursor, selection) stay.
+    pub fn with_colors(mut self, text: Option<Color32>, background: Option<Color32>) -> Theme {
+        if let Some(text) = text {
+            self.text = text;
+        }
+        if let Some(background) = background {
+            self.bg = background;
+            // Picks the 16 ANSI colors that read well on this background.
+            self.dark = luminance(background) < 0.4;
+        }
+        if text.is_some() || background.is_some() {
+            self.text_dim = self.text.lerp_to_gamma(self.bg, 0.35);
+        }
+        self
+    }
+
     /// The app's dark or light look.
     pub fn ui(dark: bool) -> Theme {
         if dark { UI_DARK } else { UI_LIGHT }
@@ -229,9 +246,75 @@ impl Theme {
     }
 }
 
+/// `#RRGGBB` for a color.
+pub fn to_hex(color: Color32) -> String {
+    let [r, g, b, _] = color.to_array();
+    format!("#{r:02X}{g:02X}{b:02X}")
+}
+
+/// A color from `#RRGGBB` (the `#` is optional), or `None` if it is not one.
+pub fn from_hex(text: &str) -> Option<Color32> {
+    let digits = text.trim().trim_start_matches('#');
+    if digits.len() != 6 || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(digits, 16).ok().map(rgb)
+}
+
+/// Relative luminance (WCAG), 0 for black to 1 for white.
+pub fn luminance(color: Color32) -> f32 {
+    let [r, g, b, _] = color.to_array();
+    let lin = |v: u8| {
+        let v = v as f32 / 255.0;
+        if v <= 0.03928 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+}
+
+/// WCAG contrast ratio between two colors, from 1 to 21.
+pub fn contrast(a: Color32, b: Color32) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hex_colors_round_trip() {
+        let color = Color32::from_rgb(0x12, 0xAB, 0xEF);
+        assert_eq!(to_hex(color), "#12ABEF");
+        assert_eq!(from_hex("#12abef"), Some(color));
+        assert_eq!(from_hex(" 12ABEF "), Some(color));
+        for bad in ["", "#12345", "#1234567", "#GGGGGG", "+12ABEF"] {
+            assert_eq!(from_hex(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn own_colors_replace_text_and_background_only() {
+        let base = Theme::terminal(DEFAULT_THEME);
+        assert_eq!(base.with_colors(None, None), base);
+
+        let custom = base.with_colors(Some(Color32::BLACK), Some(Color32::WHITE));
+        assert_eq!(custom.text, Color32::BLACK);
+        assert_eq!(custom.bg, Color32::WHITE);
+        assert!(
+            !custom.dark,
+            "a white background uses the light ANSI colors"
+        );
+        assert_eq!(custom.accent, base.accent);
+        assert_eq!(custom.name, base.name);
+
+        let text_only = base.with_colors(Some(Color32::WHITE), None);
+        assert_eq!(text_only.bg, base.bg);
+        assert!(text_only.dark);
+    }
 
     #[test]
     fn default_terminal_theme_is_green_on_black() {
@@ -280,22 +363,6 @@ mod tests {
     /// WCAG contrast ratio between text and background must be at least 4.5.
     #[test]
     fn text_is_readable_on_every_background() {
-        fn luminance(c: Color32) -> f32 {
-            let [r, g, b, _] = c.to_array();
-            let lin = |v: u8| {
-                let v = v as f32 / 255.0;
-                if v <= 0.03928 {
-                    v / 12.92
-                } else {
-                    ((v + 0.055) / 1.055).powf(2.4)
-                }
-            };
-            0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
-        }
-        fn contrast(a: Color32, b: Color32) -> f32 {
-            let (la, lb) = (luminance(a), luminance(b));
-            (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
-        }
         for theme in TERMINAL_THEMES.iter().chain([&UI_DARK, &UI_LIGHT]) {
             for bg in [theme.bg, theme.panel, theme.surface] {
                 assert!(contrast(theme.text, bg) >= 4.5, "{} text", theme.name);

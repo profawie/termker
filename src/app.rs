@@ -1,6 +1,6 @@
 //! Application state and main layout: sidebar on the left, page on the right.
 
-use eframe::egui::{self, RichText};
+use eframe::egui::{self, Color32, RichText};
 
 use uuid::Uuid;
 
@@ -137,6 +137,16 @@ pub struct App {
     pub sessions: Vec<Session>,
 }
 
+/// The terminal theme from the settings, with the user's own text and
+/// background colors applied. A color that cannot be read is ignored.
+fn terminal_theme(settings: &termker_core::model::Settings) -> Theme {
+    let color = |hex: &Option<String>| hex.as_deref().and_then(crate::theme::from_hex);
+    Theme::terminal(&settings.terminal_theme).with_colors(
+        color(&settings.terminal_text),
+        color(&settings.terminal_background),
+    )
+}
+
 /// The app's look for the `appearance` setting.
 fn ui_theme(appearance: Appearance, ctx: &egui::Context) -> Theme {
     let dark = match appearance {
@@ -216,7 +226,7 @@ impl App {
         };
         let theme = ui_theme(data.settings.appearance, &cc.egui_ctx);
         theme.apply(&cc.egui_ctx);
-        let terminal_theme = Theme::terminal(&data.settings.terminal_theme);
+        let terminal_theme = terminal_theme(&data.settings);
         let data_dir = store
             .path()
             .and_then(|path| path.parent())
@@ -255,9 +265,24 @@ impl App {
         self.save();
     }
 
+    /// Pick a terminal theme. This drops the user's own text and background
+    /// colors, so the theme shows as it is.
     pub fn set_terminal_theme(&mut self, theme: Theme) {
-        self.terminal_theme = theme;
-        self.data.settings.terminal_theme = theme.name.to_string();
+        let settings = &mut self.data.settings;
+        settings.terminal_theme = theme.name.to_string();
+        settings.terminal_text = None;
+        settings.terminal_background = None;
+        self.terminal_theme = terminal_theme(settings);
+        self.save();
+    }
+
+    /// Use the user's own text and background colors in the terminal, on
+    /// top of the chosen theme. `None` goes back to the theme's color.
+    pub fn set_terminal_colors(&mut self, text: Option<Color32>, background: Option<Color32>) {
+        let settings = &mut self.data.settings;
+        settings.terminal_text = text.map(crate::theme::to_hex);
+        settings.terminal_background = background.map(crate::theme::to_hex);
+        self.terminal_theme = terminal_theme(settings);
         self.save();
     }
 
