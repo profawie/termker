@@ -400,7 +400,7 @@ fn sign_in_fields(ui: &mut egui::Ui, app: &App, draft: &mut Host) {
     match &mut draft.auth {
         AuthMethod::Password => {
             ui.label(small(
-                "You are asked for the password when connecting. It is not saved.",
+                "You are asked for the password when connecting, and can choose to save it then.",
             ));
         }
         AuthMethod::Key { key } => {

@@ -4,6 +4,7 @@
 use uuid::Uuid;
 
 use crate::{
+    secrets::SecretStore,
     ssh::{self, Hop, KnownHosts, Prompt, SessionCommand, SessionEvent, SessionHandle},
     terminal::{Emulator, Size},
 };
@@ -41,6 +42,7 @@ impl Session {
         host_id: Uuid,
         hops: Vec<Hop>,
         known_hosts: KnownHosts,
+        secrets: SecretStore,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Self {
         let name = hops.last().map(|hop| hop.name.clone()).unwrap_or_default();
@@ -48,6 +50,7 @@ impl Session {
             runtime,
             hops.clone(),
             known_hosts,
+            secrets,
             (INITIAL_SIZE.cols, INITIAL_SIZE.rows),
             wake,
         );

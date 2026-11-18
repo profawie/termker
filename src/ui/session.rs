@@ -5,7 +5,7 @@ use eframe::egui::{self, RichText};
 use crate::{
     app::App,
     session::SessionState,
-    ssh::{HostKeyStatus, Prompt},
+    ssh::{HostKeyStatus, Prompt, Secret},
     theme::Theme,
 };
 
@@ -189,10 +189,12 @@ pub fn prompt_card(
                 hop,
                 username,
                 retry,
+                can_remember,
                 reply,
             }) => {
                 let title = format!("Password for {username}@{hop}");
-                match secret_form(ui, theme, &title, retry.then_some("Wrong password. Try again."), secret_input) {
+                let error = retry.then_some("That password was not accepted. Try again.");
+                match secret_form(ui, theme, &title, error, can_remember, secret_input) {
                     Some(answer) => {
                         let _ = reply.send(answer);
                     }
@@ -201,6 +203,7 @@ pub fn prompt_card(
                             hop,
                             username,
                             retry,
+                            can_remember,
                             reply,
                         });
                     }
@@ -209,10 +212,12 @@ pub fn prompt_card(
             Some(Prompt::Passphrase {
                 key_path,
                 retry,
+                can_remember,
                 reply,
             }) => {
                 let title = format!("Passphrase for {key_path}");
-                match secret_form(ui, theme, &title, retry.then_some("Wrong passphrase. Try again."), secret_input) {
+                let error = retry.then_some("That passphrase did not unlock the key. Try again.");
+                match secret_form(ui, theme, &title, error, can_remember, secret_input) {
                     Some(answer) => {
                         let _ = reply.send(answer);
                     }
@@ -220,6 +225,7 @@ pub fn prompt_card(
                         keep = Some(Prompt::Passphrase {
                             key_path,
                             retry,
+                            can_remember,
                             reply,
                         });
                     }
@@ -238,8 +244,9 @@ fn secret_form(
     theme: &Theme,
     title: &str,
     error: Option<&str>,
+    can_remember: bool,
     input: &mut String,
-) -> Option<Option<String>> {
+) -> Option<Option<Secret>> {
     ui.label(RichText::new(title).size(16.0).strong());
     if let Some(error) = error {
         ui.label(RichText::new(error).color(theme.danger));
@@ -253,20 +260,39 @@ fn secret_form(
         field.request_focus();
     }
     let entered = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+
+    // The tick box starts empty for every prompt, so nothing is saved
+    // unless the user asks for it this time.
+    let remember_id = egui::Id::unique("remember_secret");
+    let mut remember =
+        can_remember && ui.data(|data| data.get_temp::<bool>(remember_id).unwrap_or(false));
+    if can_remember {
+        ui.checkbox(&mut remember, "Remember in this computer's keychain");
+        ui.data_mut(|data| data.insert_temp(remember_id, remember));
+    }
+
     let mut result = None;
     ui.horizontal(|ui| {
         if ui.add(super::primary_button(theme, "Connect")).clicked() || entered {
-            result = Some(Some(std::mem::take(input)));
+            result = Some(Some(Secret {
+                value: std::mem::take(input),
+                remember,
+            }));
         }
         if ui.button("Cancel").clicked() {
             input.clear();
             result = Some(None);
         }
     });
-    ui.label(
-        RichText::new("Not saved. It is used once for this connection.")
-            .small()
-            .color(theme.text_dim),
-    );
+    if result.is_some() {
+        ui.data_mut(|data| data.remove::<bool>(remember_id));
+    }
+    let note = if remember {
+        "Saved in the system credential store after a successful sign-in. \
+         Remove it any time on the Keychain page."
+    } else {
+        "Not saved. It is used once for this connection."
+    };
+    ui.label(RichText::new(note).small().color(theme.text_dim));
     result
 }

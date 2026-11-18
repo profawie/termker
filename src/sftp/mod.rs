@@ -16,7 +16,10 @@ use tokio::{
     sync::mpsc,
 };
 
-use crate::ssh::{self, Hop, KnownHosts, Prompt, Prompter, SshError};
+use crate::{
+    secrets::SecretStore,
+    ssh::{self, Hop, KnownHosts, Prompt, Prompter, SshError},
+};
 
 const CHUNK: usize = 64 * 1024;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
@@ -194,6 +197,7 @@ pub fn spawn_sftp(
     runtime: &tokio::runtime::Handle,
     hops: Vec<Hop>,
     known_hosts: KnownHosts,
+    secrets: SecretStore,
     wake: impl Fn() + Send + Sync + 'static,
 ) -> SftpHandle {
     let (event_tx, events) = std::sync::mpsc::channel();
@@ -204,7 +208,7 @@ pub fn spawn_sftp(
     });
 
     runtime.spawn(async move {
-        let result = run(&hops, &known_hosts, &mut command_rx, &emit).await;
+        let result = run(&hops, &known_hosts, secrets, &mut command_rx, &emit).await;
         emit(Event::Closed {
             error: match result {
                 Ok(()) | Err(SshError::Cancelled) => None,
@@ -223,12 +227,13 @@ fn sftp_error(action: &str, err: impl std::fmt::Display) -> SshError {
 async fn run(
     hops: &[Hop],
     known_hosts: &KnownHosts,
+    secrets: SecretStore,
     commands: &mut mpsc::UnboundedReceiver<Command>,
     emit: &Emit,
 ) -> Result<(), SshError> {
     let prompter = {
         let emit = emit.clone();
-        Prompter::new(move |prompt| emit(Event::Prompt(prompt)))
+        Prompter::new(move |prompt| emit(Event::Prompt(prompt)), secrets)
     };
     let status = {
         let emit = emit.clone();
