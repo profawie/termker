@@ -309,6 +309,7 @@ impl Fixture {
             &tokio::runtime::Handle::current(),
             vec![hop("a", port)],
             known_hosts(name),
+            crate::secrets::SecretStore::disabled(),
             || {},
         );
         let mut fixture = Self {

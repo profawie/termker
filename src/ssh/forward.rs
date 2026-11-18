@@ -14,7 +14,8 @@ use tokio::{
 };
 
 use super::{
-    ClientHandler, Connection, Hop, KnownHosts, Prompt, Prompter, SshError, connect_with, socks,
+    ClientHandler, Connection, Hop, KnownHosts, Prompt, Prompter, SecretStore, SshError,
+    connect_with, socks,
 };
 
 /// What to forward, with the addresses already validated.
@@ -62,6 +63,7 @@ pub fn spawn_forward(
     runtime: &tokio::runtime::Handle,
     hops: Vec<Hop>,
     known_hosts: KnownHosts,
+    secrets: SecretStore,
     spec: ForwardSpec,
     wake: impl Fn() + Send + Sync + 'static,
 ) -> ForwardHandle {
@@ -74,7 +76,7 @@ pub fn spawn_forward(
 
     runtime.spawn(async move {
         let result = tokio::select! {
-            result = run(&hops, &known_hosts, &spec, &emit) => result,
+            result = run(&hops, &known_hosts, secrets, &spec, &emit) => result,
             // `recv` returns `None` once the handle is dropped.
             _ = stopped.recv() => Ok(()),
         };
@@ -95,12 +97,13 @@ pub fn spawn_forward(
 async fn run(
     hops: &[Hop],
     known_hosts: &KnownHosts,
+    secrets: SecretStore,
     spec: &ForwardSpec,
     emit: &Emit,
 ) -> Result<(), SshError> {
     let prompter = {
         let emit = emit.clone();
-        Prompter::new(move |prompt| emit(ForwardEvent::Prompt(prompt)))
+        Prompter::new(move |prompt| emit(ForwardEvent::Prompt(prompt)), secrets)
     };
     let status = {
         let emit = emit.clone();

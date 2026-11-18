@@ -123,6 +123,7 @@ impl KeychainPage {
 
         let mut open_key = None;
         let mut open_identity = None;
+        let mut forget = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
             section_title(ui, &theme, "KEYS", app.data.keys.len());
             if app.data.keys.is_empty() {
@@ -170,8 +171,49 @@ impl KeychainPage {
                     }
                 });
             }
+            ui.add_space(16.0);
+
+            let saved = app.secrets.saved();
+            section_title(ui, &theme, "SAVED PASSWORDS", saved.len());
+            if !app.secrets.available() {
+                empty_note(
+                    ui,
+                    &theme,
+                    "This system has no credential store, so passwords and passphrases \
+                     cannot be saved. You are asked for them each time.",
+                );
+            } else if saved.is_empty() {
+                empty_note(
+                    ui,
+                    &theme,
+                    "Nothing saved. Tick \"Remember\" when you are asked for a password or \
+                     passphrase to keep it in this computer's credential store.",
+                );
+            } else {
+                super::card(&theme).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    for secret in &saved {
+                        ui.horizontal(|ui| {
+                            ui.label(&secret.label);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.small_button("Forget").clicked() {
+                                        forget = Some(secret.key.clone());
+                                    }
+                                },
+                            );
+                        });
+                    }
+                });
+            }
         });
 
+        if let Some(key) = forget
+            && let Err(err) = app.secrets.forget(&key)
+        {
+            app.notify(format!("Could not remove the saved secret: {err}"));
+        }
         if let Some(key) = open_key.and_then(|id| app.data.key(id)) {
             self.panel = Some(Panel::Key(KeyForm::new(key)));
         }
@@ -418,7 +460,7 @@ fn generate_form(ui: &mut egui::Ui, app: &mut App, form: &mut GenerateForm) -> N
             ui,
             &theme,
             "A passphrase encrypts the private key on this computer. \
-             You are asked for it each time the key is used.",
+             You are asked for it when the key is used, and can choose to save it then.",
         );
     });
 
@@ -676,6 +718,9 @@ fn key_form(ui: &mut egui::Ui, app: &mut App, form: &mut KeyForm) -> Next {
             {
                 match app.key_store.remove(key.id) {
                     Ok(()) => {
+                        // A saved passphrase for a deleted key is useless.
+                        let path = app.key_store.path(key.id).display().to_string();
+                        let _ = app.secrets.forget(&crate::secrets::passphrase_key(&path));
                         app.data.remove_key(key.id);
                         app.save();
                         next = Next::Close;
@@ -839,7 +884,7 @@ fn identity_form(ui: &mut egui::Ui, app: &mut App, form: &mut IdentityForm) -> N
         dim(
             ui,
             &theme,
-            "You are asked for the password when connecting. It is not saved.",
+            "You are asked for the password when connecting, and can choose to save it then.",
         );
     }
 

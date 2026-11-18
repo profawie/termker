@@ -14,9 +14,11 @@ use russh::{
 };
 use tokio::sync::{mpsc, oneshot};
 
+pub use crate::secrets::SecretStore;
 use crate::{
     keychain::KeyStore,
     model::{AuthMethod, Data, Host},
+    secrets,
 };
 pub use known_hosts::{HostKeyStatus, KnownHosts};
 
@@ -163,26 +165,64 @@ pub enum Prompt {
         hop: String,
         username: String,
         retry: bool,
-        reply: oneshot::Sender<Option<String>>,
+        /// Whether the answer can be saved in the system credential store.
+        can_remember: bool,
+        reply: oneshot::Sender<Option<Secret>>,
     },
     Passphrase {
         key_path: String,
         retry: bool,
-        reply: oneshot::Sender<Option<String>>,
+        can_remember: bool,
+        reply: oneshot::Sender<Option<Secret>>,
     },
+}
+
+/// A password or passphrase typed by the user.
+pub struct Secret {
+    pub value: String,
+    /// The user asked to save it for next time.
+    pub remember: bool,
 }
 
 /// Sends a `Prompt` to the UI and waits for the answer.
 #[derive(Clone)]
 pub struct Prompter {
     emit: Arc<dyn Fn(Prompt) + Send + Sync>,
+    secrets: SecretStore,
 }
 
 impl Prompter {
-    pub fn new(emit: impl Fn(Prompt) + Send + Sync + 'static) -> Self {
+    pub fn new(emit: impl Fn(Prompt) + Send + Sync + 'static, secrets: SecretStore) -> Self {
         Self {
             emit: Arc::new(emit),
+            secrets,
         }
+    }
+
+    /// The saved secret under `key`, if any. The credential store can block,
+    /// so it is read off the async threads.
+    async fn saved(&self, key: &str) -> Option<String> {
+        if !self.secrets.available() {
+            return None;
+        }
+        let (secrets, key) = (self.secrets.clone(), key.to_string());
+        tokio::task::spawn_blocking(move || secrets.get(&key))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Save a secret that just worked. Failing to save does not fail the
+    /// connection; the user is simply asked again next time.
+    async fn remember(&self, key: &str, label: &str, secret: &str) {
+        let secrets = self.secrets.clone();
+        let (key, label, secret) = (key.to_string(), label.to_string(), secret.to_string());
+        let _ = tokio::task::spawn_blocking(move || secrets.save(&key, &label, &secret)).await;
+    }
+
+    async fn forget(&self, key: &str) {
+        let (secrets, key) = (self.secrets.clone(), key.to_string());
+        let _ = tokio::task::spawn_blocking(move || secrets.forget(&key)).await;
     }
 
     /// `None` if the prompt was dropped without an answer.
@@ -375,21 +415,42 @@ async fn authenticate(
 ) -> Result<(), SshError> {
     match &hop.auth {
         HopAuth::Password => {
+            // The host key was verified before this point, so a saved
+            // password is only ever sent to the host it was saved for.
+            let key = secrets::password_key(&hop.username, &hop.address, hop.port);
+            let mut saved_rejected = false;
+            if let Some(saved) = prompter.saved(&key).await {
+                let result = handle
+                    .authenticate_password(hop.username.clone(), saved)
+                    .await?;
+                if result.success() {
+                    return Ok(());
+                }
+                // It no longer works; drop it and ask.
+                prompter.forget(&key).await;
+                saved_rejected = true;
+            }
             for attempt in 0..MAX_SECRET_ATTEMPTS {
-                let password = prompter
+                let answer = prompter
                     .ask(|reply| Prompt::Password {
                         hop: hop.name.clone(),
                         username: hop.username.clone(),
-                        retry: attempt > 0,
+                        retry: attempt > 0 || saved_rejected,
+                        can_remember: prompter.secrets.available(),
                         reply,
                     })
                     .await
                     .flatten()
                     .ok_or(SshError::Cancelled)?;
                 let result = handle
-                    .authenticate_password(hop.username.clone(), password)
+                    .authenticate_password(hop.username.clone(), answer.value.clone())
                     .await?;
                 if result.success() {
+                    if answer.remember {
+                        let label =
+                            format!("Password for {}@{}:{}", hop.username, hop.address, hop.port);
+                        prompter.remember(&key, &label, &answer.value).await;
+                    }
                     return Ok(());
                 }
             }
@@ -444,18 +505,32 @@ async fn load_key(
         Err(russh::keys::Error::KeyIsEncrypted) => {}
         Err(err) => return Err(key_error(err.to_string())),
     }
+    let key = secrets::passphrase_key(&resolved.display().to_string());
+    let mut saved_rejected = false;
+    if let Some(saved) = prompter.saved(&key).await {
+        if let Ok(private) = load_secret_key(&resolved, Some(&saved)) {
+            return Ok(private);
+        }
+        prompter.forget(&key).await;
+        saved_rejected = true;
+    }
     for attempt in 0..MAX_SECRET_ATTEMPTS {
-        let passphrase = prompter
+        let answer = prompter
             .ask(|reply| Prompt::Passphrase {
                 key_path: name.to_string(),
-                retry: attempt > 0,
+                retry: attempt > 0 || saved_rejected,
+                can_remember: prompter.secrets.available(),
                 reply,
             })
             .await
             .flatten()
             .ok_or(SshError::Cancelled)?;
-        if let Ok(key) = load_secret_key(&resolved, Some(&passphrase)) {
-            return Ok(key);
+        if let Ok(private) = load_secret_key(&resolved, Some(&answer.value)) {
+            if answer.remember {
+                let label = format!("Passphrase for key {name}");
+                prompter.remember(&key, &label, &answer.value).await;
+            }
+            return Ok(private);
         }
     }
     Err(key_error("wrong passphrase".to_string()))
@@ -506,6 +581,7 @@ pub fn spawn_shell(
     runtime: &tokio::runtime::Handle,
     hops: Vec<Hop>,
     known_hosts: KnownHosts,
+    secrets: SecretStore,
     (cols, rows): (u16, u16),
     wake: impl Fn() + Send + Sync + 'static,
 ) -> SessionHandle {
@@ -519,7 +595,7 @@ pub fn spawn_shell(
     runtime.spawn(async move {
         let prompter = {
             let emit = emit.clone();
-            Prompter::new(move |prompt| emit(SessionEvent::Prompt(prompt)))
+            Prompter::new(move |prompt| emit(SessionEvent::Prompt(prompt)), secrets)
         };
         let status = {
             let emit = emit.clone();

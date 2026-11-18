@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::{
     keychain::KeyStore,
     model::Data,
+    secrets::SecretStore,
     session::{Session, SessionState},
     ssh::{
         Hop, KnownHosts, Prompt,
@@ -129,6 +130,7 @@ pub struct App {
     runtime: tokio::runtime::Runtime,
     known_hosts: KnownHosts,
     pub key_store: KeyStore,
+    pub secrets: SecretStore,
     pub sessions: Vec<Session>,
 }
 
@@ -171,6 +173,7 @@ impl App {
             runtime,
             known_hosts: KnownHosts::new(known_hosts_path),
             key_store: KeyStore::new(data_dir.join("keys")),
+            secrets: SecretStore::os(data_dir.join("secrets.json")),
             keychain_page: KeychainPage::default(),
             sessions: Vec::new(),
             store,
@@ -237,6 +240,7 @@ impl App {
             host_id,
             hops,
             self.known_hosts.clone(),
+            self.secrets.clone(),
             move || ctx.request_repaint(),
         );
         self.page = Page::Session(session.id);
@@ -276,6 +280,7 @@ impl App {
                     self.runtime.handle(),
                     hops,
                     self.known_hosts.clone(),
+                    self.secrets.clone(),
                     spec,
                     move || ctx.request_repaint(),
                 );
@@ -306,7 +311,13 @@ impl App {
         hops: Vec<Hop>,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> crate::sftp::SftpHandle {
-        crate::sftp::spawn_sftp(self.runtime.handle(), hops, self.known_hosts.clone(), wake)
+        crate::sftp::spawn_sftp(
+            self.runtime.handle(),
+            hops,
+            self.known_hosts.clone(),
+            self.secrets.clone(),
+            wake,
+        )
     }
 
     /// Stop a forward if it is running.

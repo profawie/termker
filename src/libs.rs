@@ -46,6 +46,12 @@ pub const LIBRARIES: &[LibraryInfo] = &[
         license: "MIT OR Apache-2.0",
     },
     LibraryInfo {
+        name: "keyring",
+        purpose: "Saved passwords in the OS credential store (Windows Credential Manager, macOS Keychain)",
+        website: "https://github.com/open-source-cooperative/keyring-rs",
+        license: "MIT OR Apache-2.0",
+    },
+    LibraryInfo {
         name: "russh-sftp",
         purpose: "SFTP protocol: file listing and transfers",
         website: "https://github.com/AspectUnk/russh-sftp",
