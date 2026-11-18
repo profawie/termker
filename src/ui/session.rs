@@ -34,7 +34,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, index: usize) -> SessionAction {
             ui.horizontal(|ui| {
                 let (dot, status) = match &session.state {
                     SessionState::Connecting(text) => (theme.text_dim, format!("{text}...")),
-                    SessionState::Connected => (theme.accent, "Connected".to_string()),
+                    SessionState::Connected => (theme.accent_text, "Connected".to_string()),
                     SessionState::Closed(None) => (theme.text_dim, "Disconnected".to_string()),
                     SessionState::Closed(Some(_)) => (theme.danger, "Failed".to_string()),
                 };
@@ -120,7 +120,7 @@ pub fn prompt_card(
     };
     let mut keep = Some(prompt);
     super::card(theme).show(ui, |ui| {
-        ui.set_max_width(560.0);
+        ui.set_max_width(ui.available_width().min(560.0));
         match keep.take() {
             Some(Prompt::HostKey {
                 hop,
@@ -148,7 +148,7 @@ pub fn prompt_card(
                 }
                 ui.add_space(4.0);
                 ui.label(RichText::new(format!("{algorithm} key fingerprint")).small().color(theme.text_dim));
-                ui.label(RichText::new(&fingerprint).monospace());
+                ui.add(egui::Label::new(RichText::new(&fingerprint).monospace()).wrap());
                 ui.add_space(8.0);
                 let mut answer = None;
                 ui.horizontal(|ui| {

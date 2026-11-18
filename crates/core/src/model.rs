@@ -27,6 +27,16 @@ pub struct Host {
     pub identity: Option<Uuid>,
 }
 
+/// A named group of hosts on the Hosts page. Hosts refer to it by name
+/// (`Host::group`); a group can exist without any hosts in it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Group {
+    pub name: String,
+    /// Whether its hosts are hidden on the Hosts page.
+    #[serde(default)]
+    pub collapsed: bool,
+}
+
 /// How the user authenticates to a host. The secret itself is not stored
 /// here: passwords are asked for when connecting, and keys stay in their file.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -292,6 +302,9 @@ impl Forward {
 pub struct Data {
     #[serde(default)]
     pub hosts: Vec<Host>,
+    /// Host groups, kept sorted by name.
+    #[serde(default)]
+    pub groups: Vec<Group>,
     #[serde(default)]
     pub forwards: Vec<Forward>,
     #[serde(default)]
@@ -314,12 +327,14 @@ pub enum HostError {
     MissingKey,
     MissingName,
     MissingUsername,
+    GroupExists,
 }
 
 impl std::fmt::Display for HostError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::MissingAddress => "Address is required.",
+            Self::GroupExists => "A group with this name already exists.",
             Self::MissingKeyPath => "Choose the private key file to use.",
             Self::InvalidPort => "Port must be a number from 1 to 65535.",
             Self::JumpLoop => "This jump host would create a loop.",
@@ -493,6 +508,10 @@ impl Data {
             host.identity = None;
         }
         self.connection_path(&host)?;
+        // A group typed in a different case is the existing group.
+        if let Some(group) = self.group(&host.group) {
+            host.group = group.name.clone();
+        }
         match self
             .hosts
             .iter_mut()
@@ -501,7 +520,116 @@ impl Data {
             Some(existing) => *existing = host,
             None => self.hosts.push(host),
         }
+        self.sync_groups();
         Ok(())
+    }
+
+    /// The group called `name`, compared without regard to case.
+    pub fn group(&self, name: &str) -> Option<&Group> {
+        let name = name.trim().to_lowercase();
+        self.groups
+            .iter()
+            .find(|group| group.name.to_lowercase() == name)
+    }
+
+    /// Hosts in the group `name`; an empty name means hosts without a group.
+    pub fn hosts_in_group(&self, name: &str) -> usize {
+        self.hosts.iter().filter(|host| host.group == name).count()
+    }
+
+    /// Make sure every group a host refers to exists, and keep the groups
+    /// sorted. Data saved before groups were stored on their own only has
+    /// the name on each host.
+    pub fn sync_groups(&mut self) {
+        for index in 0..self.hosts.len() {
+            let name = self.hosts[index].group.trim().to_string();
+            match self.group(&name).map(|group| group.name.clone()) {
+                Some(existing) => self.hosts[index].group = existing,
+                None if name.is_empty() => self.hosts[index].group = name,
+                None => {
+                    self.groups.push(Group {
+                        name: name.clone(),
+                        collapsed: false,
+                    });
+                    self.hosts[index].group = name;
+                }
+            }
+        }
+        self.groups.retain(|group| !group.name.trim().is_empty());
+        self.groups
+            .sort_by_key(|group| (group.name.to_lowercase(), group.name.clone()));
+        self.groups.dedup_by_key(|group| group.name.to_lowercase());
+    }
+
+    /// Create an empty group.
+    pub fn add_group(&mut self, name: &str) -> Result<(), HostError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(HostError::MissingName);
+        }
+        if self.group(name).is_some() {
+            return Err(HostError::GroupExists);
+        }
+        self.groups.push(Group {
+            name: name.to_string(),
+            collapsed: false,
+        });
+        self.sync_groups();
+        Ok(())
+    }
+
+    /// Rename a group; its hosts stay in it.
+    pub fn rename_group(&mut self, from: &str, to: &str) -> Result<(), HostError> {
+        let to = to.trim();
+        if to.is_empty() {
+            return Err(HostError::MissingName);
+        }
+        // Changing only the letter case of the same group is allowed.
+        if to.to_lowercase() != from.to_lowercase() && self.group(to).is_some() {
+            return Err(HostError::GroupExists);
+        }
+        for group in &mut self.groups {
+            if group.name == from {
+                group.name = to.to_string();
+            }
+        }
+        for host in &mut self.hosts {
+            if host.group == from {
+                host.group = to.to_string();
+            }
+        }
+        self.sync_groups();
+        Ok(())
+    }
+
+    /// Delete a group. Its hosts are kept and become ungrouped.
+    pub fn remove_group(&mut self, name: &str) {
+        self.groups.retain(|group| group.name != name);
+        for host in &mut self.hosts {
+            if host.group == name {
+                host.group.clear();
+            }
+        }
+    }
+
+    /// Show or hide a group's hosts on the Hosts page.
+    pub fn set_group_collapsed(&mut self, name: &str, collapsed: bool) {
+        for group in &mut self.groups {
+            if group.name == name {
+                group.collapsed = collapsed;
+            }
+        }
+    }
+
+    /// Move a host to another group; an empty name removes it from its group.
+    pub fn move_host(&mut self, id: Uuid, group: &str) {
+        let group = self
+            .group(group)
+            .map(|group| group.name.clone())
+            .unwrap_or_default();
+        if let Some(host) = self.hosts.iter_mut().find(|host| host.id == id) {
+            host.group = group;
+        }
     }
 
     /// Insert a new forward or update an existing one, after validation.
@@ -571,6 +699,79 @@ mod tests {
         let text = serde_json::to_string(&old).unwrap();
         assert!(text.contains(r#""terminal_theme":"Amber""#));
         assert!(text.contains(r#""appearance":"dark""#));
+    }
+
+    fn grouped(label: &str, group: &str) -> Host {
+        Host {
+            group: group.into(),
+            ..host(label)
+        }
+    }
+
+    fn group_names(data: &Data) -> Vec<&str> {
+        data.groups
+            .iter()
+            .map(|group| group.name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn groups_from_before_they_were_stored_are_picked_up_from_hosts() {
+        let old = serde_json::json!({
+            "hosts": [
+                {"id": Uuid::new_v4(), "label": "web", "address": "w", "group": "Prod"},
+                {"id": Uuid::new_v4(), "label": "db", "address": "d", "group": " prod "},
+                {"id": Uuid::new_v4(), "label": "lab", "address": "l"}
+            ]
+        });
+        let mut data: Data = serde_json::from_value(old).unwrap();
+        assert!(data.groups.is_empty());
+        data.sync_groups();
+        assert_eq!(group_names(&data), ["Prod"]);
+        assert_eq!(data.hosts_in_group("Prod"), 2);
+        assert_eq!(data.hosts_in_group(""), 1);
+    }
+
+    #[test]
+    fn saving_a_host_creates_its_group_and_reuses_one_in_another_case() {
+        let mut data = Data::default();
+        data.upsert_host(grouped("web", "Prod")).unwrap();
+        data.upsert_host(grouped("db", "PROD")).unwrap();
+        data.upsert_host(grouped("lab", "alpha")).unwrap();
+        assert_eq!(group_names(&data), ["alpha", "Prod"]);
+        assert_eq!(data.hosts_in_group("Prod"), 2);
+    }
+
+    #[test]
+    fn groups_can_be_added_renamed_and_deleted() {
+        let mut data = Data::default();
+        let web = grouped("web", "Prod");
+        data.upsert_host(web.clone()).unwrap();
+
+        data.add_group(" Staging ").unwrap();
+        assert_eq!(group_names(&data), ["Prod", "Staging"]);
+        assert_eq!(data.add_group("staging"), Err(HostError::GroupExists));
+        assert_eq!(data.add_group("  "), Err(HostError::MissingName));
+
+        assert_eq!(
+            data.rename_group("Prod", "staging"),
+            Err(HostError::GroupExists)
+        );
+        data.rename_group("Prod", "Production").unwrap();
+        data.rename_group("Production", "production").unwrap();
+        assert_eq!(group_names(&data), ["production", "Staging"]);
+        assert_eq!(data.host(web.id).unwrap().group, "production");
+
+        data.set_group_collapsed("Staging", true);
+        assert!(data.group("staging").unwrap().collapsed);
+
+        data.move_host(web.id, "STAGING");
+        assert_eq!(data.host(web.id).unwrap().group, "Staging");
+
+        data.remove_group("Staging");
+        assert_eq!(group_names(&data), ["production"]);
+        // The host is kept, without a group.
+        assert_eq!(data.host(web.id).unwrap().group, "");
     }
 
     #[test]

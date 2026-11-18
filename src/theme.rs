@@ -19,7 +19,11 @@ pub struct Theme {
     pub border: Color32,
     pub text: Color32,
     pub text_dim: Color32,
+    /// Fill of primary buttons and of the selected item.
     pub accent: Color32,
+    /// Accent for text, links, outlines and status dots, readable straight
+    /// on the backgrounds.
+    pub accent_text: Color32,
     /// Text color on top of `accent`.
     pub on_accent: Color32,
     pub danger: Color32,
@@ -39,8 +43,9 @@ pub const UI_DARK: Theme = Theme {
     border: rgb(0x40454D),
     text: rgb(0xE4E6E9),
     text_dim: rgb(0xA4ABB3),
-    accent: rgb(0x4ADE80),
-    on_accent: rgb(0x0F1A12),
+    accent: rgb(0x0B6BA8),
+    accent_text: rgb(0x58A6FF),
+    on_accent: rgb(0xFFFFFF),
     danger: rgb(0xF87171),
 };
 
@@ -54,7 +59,8 @@ pub const UI_LIGHT: Theme = Theme {
     border: rgb(0xD2D7DD),
     text: rgb(0x1F2328),
     text_dim: rgb(0x57606A),
-    accent: rgb(0x15803D),
+    accent: rgb(0x0969DA),
+    accent_text: rgb(0x0550AE),
     on_accent: rgb(0xFFFFFF),
     danger: rgb(0xB91C1C),
 };
@@ -71,6 +77,7 @@ pub const TERMINAL_THEMES: &[Theme] = &[
         text: rgb(0x33FF66),
         text_dim: rgb(0x1E9E48),
         accent: rgb(0x33FF66),
+        accent_text: rgb(0x33FF66),
         on_accent: rgb(0x000000),
         danger: rgb(0xFF5C5C),
     },
@@ -84,6 +91,7 @@ pub const TERMINAL_THEMES: &[Theme] = &[
         text: rgb(0xFFB000),
         text_dim: rgb(0xC48A0A),
         accent: rgb(0xFFB000),
+        accent_text: rgb(0xFFB000),
         on_accent: rgb(0x0A0700),
         danger: rgb(0xFF6B5C),
     },
@@ -97,6 +105,7 @@ pub const TERMINAL_THEMES: &[Theme] = &[
         text: rgb(0xD6E0FF),
         text_dim: rgb(0x8592BF),
         accent: rgb(0x7C9CFF),
+        accent_text: rgb(0x7C9CFF),
         on_accent: rgb(0x0B1020),
         danger: rgb(0xFF7A90),
     },
@@ -110,6 +119,7 @@ pub const TERMINAL_THEMES: &[Theme] = &[
         text: rgb(0xE6E8EA),
         text_dim: rgb(0x979EA6),
         accent: rgb(0x4FD1C5),
+        accent_text: rgb(0x4FD1C5),
         on_accent: rgb(0x10201E),
         danger: rgb(0xF47174),
     },
@@ -123,6 +133,7 @@ pub const TERMINAL_THEMES: &[Theme] = &[
         text: rgb(0x26302A),
         text_dim: rgb(0x555F59),
         accent: rgb(0x1F7A4D),
+        accent_text: rgb(0x1F7A4D),
         on_accent: rgb(0xFFFFFF),
         danger: rgb(0xB3261E),
     },
@@ -170,9 +181,9 @@ impl Theme {
         visuals.window_stroke = Stroke::new(1.0, self.border);
         visuals.extreme_bg_color = self.surface;
         visuals.faint_bg_color = self.surface;
-        visuals.hyperlink_color = self.accent;
+        visuals.hyperlink_color = self.accent_text;
         visuals.selection.bg_fill = self.accent.gamma_multiply(0.35);
-        visuals.selection.stroke = Stroke::new(1.0, self.accent);
+        visuals.selection.stroke = Stroke::new(1.0, self.accent_text);
         visuals.warn_fg_color = self.danger;
         visuals.error_fg_color = self.danger;
 
@@ -190,13 +201,13 @@ impl Theme {
 
         widgets.hovered.bg_fill = self.accent.gamma_multiply(0.18);
         widgets.hovered.weak_bg_fill = self.accent.gamma_multiply(0.18);
-        widgets.hovered.bg_stroke = Stroke::new(1.0, self.accent);
+        widgets.hovered.bg_stroke = Stroke::new(1.0, self.accent_text);
         widgets.hovered.fg_stroke = Stroke::new(1.5, self.text);
         widgets.hovered.corner_radius = radius;
 
         widgets.active.bg_fill = self.accent.gamma_multiply(0.3);
         widgets.active.weak_bg_fill = self.accent.gamma_multiply(0.3);
-        widgets.active.bg_stroke = Stroke::new(1.0, self.accent);
+        widgets.active.bg_stroke = Stroke::new(1.0, self.accent_text);
         widgets.active.fg_stroke = Stroke::new(2.0, self.text);
         widgets.active.corner_radius = radius;
 
@@ -246,6 +257,15 @@ mod tests {
     }
 
     #[test]
+    fn app_buttons_are_blue_with_white_text() {
+        for theme in [UI_DARK, UI_LIGHT] {
+            let [r, g, b, _] = theme.accent.to_array();
+            assert!(b > g && g > r, "{} buttons are blue", theme.name);
+            assert_eq!(theme.on_accent, Color32::WHITE);
+        }
+    }
+
+    #[test]
     fn unknown_theme_falls_back_to_default() {
         assert_eq!(Theme::terminal("missing").name, DEFAULT_THEME);
     }
@@ -286,6 +306,13 @@ mod tests {
                 "{} accent",
                 theme.name
             );
+            for bg in [theme.bg, theme.panel, theme.surface] {
+                assert!(
+                    contrast(theme.accent_text, bg) >= 4.5,
+                    "{} accent text",
+                    theme.name
+                );
+            }
         }
     }
 }

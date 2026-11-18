@@ -7,6 +7,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     net::SocketAddr,
     path::PathBuf,
+    time::Instant,
 };
 
 use russh::{
@@ -279,7 +280,6 @@ struct Fixture {
     remote: PathBuf,
     /// Scratch directory on the "local" side.
     local: PathBuf,
-    next_id: u64,
 }
 
 impl Fixture {
@@ -316,7 +316,6 @@ impl Fixture {
             handle,
             remote,
             local: temp_dir(&format!("{name}-local")),
-            next_id: 0,
         };
         let home = fixture
             .wait(|event| match event {
@@ -365,39 +364,6 @@ impl Fixture {
             _ => None,
         })
         .await
-    }
-
-    fn transfer(&mut self, remote: &str, local: PathBuf) -> (u64, Transfer, Arc<AtomicBool>) {
-        self.next_id += 1;
-        let cancel = Arc::new(AtomicBool::new(false));
-        let transfer = Transfer {
-            id: self.next_id,
-            remote: remote.to_string(),
-            local,
-            cancel: cancel.clone(),
-        };
-        (self.next_id, transfer, cancel)
-    }
-
-    /// Wait for transfer `id` to end; returns its error and the last
-    /// progress report seen for it.
-    async fn done(&mut self, id: u64) -> (Option<String>, Option<(u64, u64)>) {
-        let mut last = None;
-        let error = self
-            .wait(|event| match event {
-                Event::Progress {
-                    id: seen,
-                    done,
-                    total,
-                } if *seen == id => {
-                    last = Some((*done, *total));
-                    None
-                }
-                Event::TransferDone { id: seen, error } if *seen == id => Some(error.clone()),
-                _ => None,
-            })
-            .await;
-        (error, last)
     }
 }
 
@@ -457,80 +423,191 @@ async fn create_rename_and_delete_refresh_the_listing() {
     assert!(!fixture.listing("/").await.contains(&"New".to_string()));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn download_writes_the_whole_file_and_reports_progress() {
-    let mut fixture = Fixture::connect("sftp-download").await;
-    let target = fixture.local.join("copy.bin");
-    let (id, transfer, _) = fixture.transfer("/archive.bin", target.clone());
-    fixture.handle.send(Command::Download(transfer));
+impl Fixture {
+    fn remote_place(&self, path: &str) -> Place {
+        Place::Remote {
+            peer: self.handle.peer(),
+            path: path.to_string(),
+        }
+    }
+}
 
-    let (error, progress) = fixture.done(id).await;
-    assert_eq!(error, None);
-    assert_eq!(progress, Some((300_000, 300_000)));
-    assert_eq!(fs::read(&target).unwrap(), vec![7u8; 300_000]);
-    assert!(!partial_path(&target).exists(), "temporary file is gone");
+/// Run a copy to its end; returns its error, skipped count and the last
+/// progress report.
+async fn run_copy(from: Place, to: Place) -> (Option<String>, usize, Option<(u64, u64)>) {
+    let handle = spawn_copy(&tokio::runtime::Handle::current(), from, to, || {});
+    finish_copy(handle).await
+}
+
+async fn finish_copy(handle: CopyHandle) -> (Option<String>, usize, Option<(u64, u64)>) {
+    let mut last = None;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        assert!(Instant::now() < deadline, "timed out waiting for the copy");
+        match handle.events.try_recv() {
+            Ok(CopyEvent::Progress { done, total }) => last = Some((done, total)),
+            Ok(CopyEvent::Done { error, skipped }) => return (error, skipped, last),
+            Err(_) => tokio::time::sleep(Duration::from_millis(5)).await,
+        }
+    }
+}
+
+/// A folder with a file, an empty folder and a nested file.
+fn sample_tree(root: &std::path::Path) {
+    fs::create_dir_all(root.join("site/css")).unwrap();
+    fs::create_dir_all(root.join("site/empty")).unwrap();
+    fs::write(root.join("site/index.html"), b"<h1>hi</h1>").unwrap();
+    fs::write(root.join("site/css/main.css"), vec![b'x'; 150_000]).unwrap();
+}
+
+fn assert_sample_tree(root: &std::path::Path) {
+    assert_eq!(
+        fs::read(root.join("site/index.html")).unwrap(),
+        b"<h1>hi</h1>"
+    );
+    assert_eq!(
+        fs::read(root.join("site/css/main.css")).unwrap().len(),
+        150_000
+    );
+    assert!(root.join("site/empty").is_dir());
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn failed_download_leaves_no_file_behind() {
-    let mut fixture = Fixture::connect("sftp-download-fail").await;
-    let target = fixture.local.join("nothing.txt");
-    let (id, transfer, _) = fixture.transfer("/does-not-exist", target.clone());
-    fixture.handle.send(Command::Download(transfer));
-
-    let (error, _) = fixture.done(id).await;
-    assert!(error.is_some());
-    assert!(!target.exists());
-    assert!(!partial_path(&target).exists());
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn cancelled_download_keeps_an_existing_local_file() {
-    let mut fixture = Fixture::connect("sftp-cancel").await;
-    let target = fixture.local.join("keep.bin");
-    fs::write(&target, b"original").unwrap();
-    let (id, transfer, cancel) = fixture.transfer("/archive.bin", target.clone());
-    cancel.store(true, Ordering::Relaxed);
-    fixture.handle.send(Command::Download(transfer));
-
-    let (error, _) = fixture.done(id).await;
-    assert_eq!(error.as_deref(), Some("Cancelled"));
-    assert_eq!(fs::read(&target).unwrap(), b"original");
-    assert!(!partial_path(&target).exists());
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn upload_creates_the_file_and_refreshes_the_folder() {
-    let mut fixture = Fixture::connect("sftp-upload").await;
-    fixture.listing("/").await;
+async fn copies_a_file_from_this_computer_to_a_server_and_back() {
+    let fixture = Fixture::connect("copy-file").await;
     let source = fixture.local.join("report.pdf");
-    let content: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
-    fs::write(&source, &content).unwrap();
-    let (id, transfer, _) = fixture.transfer("/Docs/report.pdf", source);
-    fixture.handle.send(Command::Upload(transfer));
+    fs::write(&source, vec![3u8; 200_000]).unwrap();
 
-    let (error, progress) = fixture.done(id).await;
-    assert_eq!(error, None);
+    let (error, skipped, progress) = run_copy(
+        Place::Local(source.clone()),
+        fixture.remote_place("/Docs/report.pdf"),
+    )
+    .await;
+    assert_eq!((error, skipped), (None, 0));
     assert_eq!(progress, Some((200_000, 200_000)));
-    assert_eq!(fixture.listing("/Docs").await, ["report.pdf"]);
     assert_eq!(
         fs::read(fixture.remote.join("Docs/report.pdf")).unwrap(),
-        content
+        vec![3u8; 200_000]
     );
+
+    let back = fixture.local.join("back.bin");
+    let (error, ..) = run_copy(
+        fixture.remote_place("/archive.bin"),
+        Place::Local(back.clone()),
+    )
+    .await;
+    assert_eq!(error, None);
+    assert_eq!(fs::read(&back).unwrap(), vec![7u8; 300_000]);
+    assert!(!partial_path(&back).exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn cancelled_upload_removes_the_partial_remote_file() {
-    let mut fixture = Fixture::connect("sftp-upload-cancel").await;
-    let source = fixture.local.join("big.bin");
-    fs::write(&source, vec![1u8; 100_000]).unwrap();
-    let (id, transfer, cancel) = fixture.transfer("/big.bin", source);
-    cancel.store(true, Ordering::Relaxed);
-    fixture.handle.send(Command::Upload(transfer));
+async fn copies_a_folder_with_everything_in_it_in_both_directions() {
+    let fixture = Fixture::connect("copy-folder").await;
+    sample_tree(&fixture.local);
 
-    let (error, _) = fixture.done(id).await;
+    let (error, ..) = run_copy(
+        Place::Local(fixture.local.join("site")),
+        fixture.remote_place("/site"),
+    )
+    .await;
+    assert_eq!(error, None);
+    assert_sample_tree(&fixture.remote);
+
+    // Into a folder that already exists: merged, files replaced.
+    let target = fixture.local.join("download");
+    fs::create_dir_all(target.join("site")).unwrap();
+    fs::write(target.join("site/index.html"), b"old").unwrap();
+    fs::write(target.join("site/keep.txt"), b"keep").unwrap();
+    let (error, _, progress) = run_copy(
+        fixture.remote_place("/site"),
+        Place::Local(target.join("site")),
+    )
+    .await;
+    assert_eq!(error, None);
+    assert_eq!(progress, Some((150_011, 150_011)));
+    assert_sample_tree(&target);
+    assert_eq!(fs::read(target.join("site/keep.txt")).unwrap(), b"keep");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn copies_straight_from_one_server_to_another() {
+    let first = Fixture::connect("copy-server-a").await;
+    let second = Fixture::connect("copy-server-b").await;
+    sample_tree(&first.remote);
+
+    let (error, ..) = run_copy(
+        first.remote_place("/archive.bin"),
+        second.remote_place("/Docs/copy.bin"),
+    )
+    .await;
+    assert_eq!(error, None);
+    assert_eq!(
+        fs::read(second.remote.join("Docs/copy.bin")).unwrap(),
+        vec![7u8; 300_000]
+    );
+
+    let (error, ..) = run_copy(first.remote_place("/site"), second.remote_place("/site")).await;
+    assert_eq!(error, None);
+    assert_sample_tree(&second.remote);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn links_inside_a_folder_are_skipped_and_counted() {
+    let fixture = Fixture::connect("copy-links").await;
+    sample_tree(&fixture.local);
+    std::os::unix::fs::symlink("/", fixture.local.join("site/loop")).unwrap();
+
+    let (error, skipped, _) = run_copy(
+        Place::Local(fixture.local.join("site")),
+        fixture.remote_place("/site"),
+    )
+    .await;
+    assert_eq!((error, skipped), (None, 1));
+    assert!(!fixture.remote.join("site/loop").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_or_cancelled_copy_leaves_no_partial_file() {
+    let fixture = Fixture::connect("copy-fail").await;
+
+    let target = fixture.local.join("missing.txt");
+    let (error, ..) = run_copy(
+        fixture.remote_place("/missing.txt"),
+        Place::Local(target.clone()),
+    )
+    .await;
+    assert!(error.is_some());
+    assert!(!target.exists() && !partial_path(&target).exists());
+
+    // The same file on the same server is refused instead of emptied.
+    let (error, ..) = run_copy(
+        fixture.remote_place("/notes.txt"),
+        fixture.remote_place("/notes.txt"),
+    )
+    .await;
+    assert_eq!(
+        error.as_deref(),
+        Some("The source and the destination are the same.")
+    );
+    assert_eq!(
+        fs::read(fixture.remote.join("notes.txt")).unwrap(),
+        b"hello"
+    );
+
+    let source = fixture.local.join("big.bin");
+    fs::write(&source, vec![1u8; 2_000_000]).unwrap();
+    let handle = spawn_copy(
+        &tokio::runtime::Handle::current(),
+        Place::Local(source),
+        fixture.remote_place("/big.bin"),
+        || {},
+    );
+    handle.cancel();
+    let (error, ..) = finish_copy(handle).await;
     assert_eq!(error.as_deref(), Some("Cancelled"));
-    assert!(!fixture.listing("/").await.contains(&"big.bin".to_string()));
+    assert!(!fixture.remote.join("big.bin").exists());
 }
 
 #[test]

@@ -3,22 +3,21 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::{Duration, Instant, SystemTime},
+    sync::Arc,
+    time::{Duration, SystemTime},
 };
 
 use russh_sftp::client::SftpSession;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    sync::mpsc,
-};
+use tokio::sync::mpsc;
 
 use termker_core::secrets::SecretStore;
 
 use crate::{self as ssh, Hop, KnownHosts, Prompt, Prompter, SshError};
+
+pub mod copy;
+pub mod local;
+
+pub use copy::{CopyEvent, CopyHandle, Peer, Place, spawn_copy};
 
 const CHUNK: usize = 64 * 1024;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
@@ -115,16 +114,6 @@ pub enum Command {
     CreateDir(String),
     Remove { path: String, is_dir: bool },
     Rename { from: String, to: String },
-    Download(Transfer),
-    Upload(Transfer),
-}
-
-/// One file to copy. `cancel` can be set at any time to stop it.
-pub struct Transfer {
-    pub id: u64,
-    pub remote: String,
-    pub local: PathBuf,
-    pub cancel: Arc<AtomicBool>,
 }
 
 pub enum Event {
@@ -140,16 +129,6 @@ pub enum Event {
     },
     /// A list, create, delete or rename request failed.
     Failed(String),
-    Progress {
-        id: u64,
-        done: u64,
-        total: u64,
-    },
-    /// A transfer ended. `error` is `None` on success.
-    TransferDone {
-        id: u64,
-        error: Option<String>,
-    },
     Closed {
         error: Option<String>,
     },
@@ -159,9 +138,15 @@ pub enum Event {
 pub struct SftpHandle {
     pub events: std::sync::mpsc::Receiver<Event>,
     commands: mpsc::UnboundedSender<Command>,
+    peer: Peer,
 }
 
 impl SftpHandle {
+    /// This session as one side of a copy (see [`spawn_copy`]).
+    pub fn peer(&self) -> Peer {
+        self.peer.clone()
+    }
+
     pub fn send(&self, command: Command) {
         let _ = self.commands.send(command);
     }
@@ -183,8 +168,18 @@ pub fn spawn_sftp(
         wake();
     });
 
+    let peer = Peer::default();
+    let session = peer.clone();
     runtime.spawn(async move {
-        let result = run(&hops, &known_hosts, secrets, &mut command_rx, &emit).await;
+        let result = run(
+            &hops,
+            &known_hosts,
+            secrets,
+            &mut command_rx,
+            &emit,
+            &session,
+        )
+        .await;
         emit(Event::Closed {
             error: match result {
                 Ok(()) | Err(SshError::Cancelled) => None,
@@ -193,7 +188,11 @@ pub fn spawn_sftp(
         });
     });
 
-    SftpHandle { events, commands }
+    SftpHandle {
+        events,
+        commands,
+        peer,
+    }
 }
 
 fn sftp_error(action: &str, err: impl std::fmt::Display) -> SshError {
@@ -206,6 +205,7 @@ async fn run(
     secrets: SecretStore,
     commands: &mut mpsc::UnboundedReceiver<Command>,
     emit: &Emit,
+    peer: &Peer,
 ) -> Result<(), SshError> {
     let prompter = {
         let emit = emit.clone();
@@ -230,6 +230,7 @@ async fn run(
             .await
             .map_err(|err| sftp_error("Could not start SFTP", err))?,
     );
+    peer.set(sftp.clone());
     let home = sftp
         .canonicalize(".")
         .await
@@ -265,30 +266,6 @@ async fn run(
             Command::Rename { from, to } => {
                 let result = sftp.rename(from, to.clone()).await;
                 finish(&sftp, emit, "Could not rename", result, &to).await;
-            }
-            Command::Download(transfer) => {
-                let (sftp, emit) = (sftp.clone(), emit.clone());
-                tokio::spawn(async move {
-                    let error = download(&sftp, &transfer, &emit).await.err();
-                    emit(Event::TransferDone {
-                        id: transfer.id,
-                        error,
-                    });
-                });
-            }
-            Command::Upload(transfer) => {
-                let (sftp, emit) = (sftp.clone(), emit.clone());
-                tokio::spawn(async move {
-                    let error = upload(&sftp, &transfer, &emit).await.err();
-                    emit(Event::TransferDone {
-                        id: transfer.id,
-                        error,
-                    });
-                    // Show the new file without a manual refresh.
-                    if let Some(dir) = parent(&transfer.remote) {
-                        list(&sftp, &dir, &emit).await;
-                    }
-                });
             }
         }
     }
@@ -353,130 +330,11 @@ async fn list(sftp: &SftpSession, path: &str, emit: &Emit) {
     }
 }
 
-/// Reports progress at most every `PROGRESS_INTERVAL`, and always at the end.
-struct Progress<'a> {
-    id: u64,
-    total: u64,
-    done: u64,
-    last: Instant,
-    emit: &'a Emit,
-}
-
-impl<'a> Progress<'a> {
-    fn new(id: u64, total: u64, emit: &'a Emit) -> Self {
-        emit(Event::Progress { id, done: 0, total });
-        Self {
-            id,
-            total,
-            done: 0,
-            last: Instant::now(),
-            emit,
-        }
-    }
-
-    fn add(&mut self, bytes: usize) {
-        self.done += bytes as u64;
-        if self.last.elapsed() >= PROGRESS_INTERVAL || self.done >= self.total {
-            self.last = Instant::now();
-            (self.emit)(Event::Progress {
-                id: self.id,
-                done: self.done,
-                total: self.total.max(self.done),
-            });
-        }
-    }
-}
-
-/// Path of the temporary file a download is written to first.
+/// Path of the temporary file a copy to this computer is written to first.
 pub fn partial_path(local: &Path) -> PathBuf {
     let mut name = local.file_name().unwrap_or_default().to_os_string();
     name.push(".part");
     local.with_file_name(name)
-}
-
-/// Download to `<name>.part` and rename when complete, so a failed or
-/// cancelled download never leaves a truncated file under the real name.
-async fn download(sftp: &SftpSession, transfer: &Transfer, emit: &Emit) -> Result<(), String> {
-    let partial = partial_path(&transfer.local);
-    let result = async {
-        let mut remote = sftp
-            .open(transfer.remote.clone())
-            .await
-            .map_err(|err| err.to_string())?;
-        let total = remote.metadata().await.map(|meta| meta.len()).unwrap_or(0);
-        let mut local = tokio::fs::File::create(&partial)
-            .await
-            .map_err(|err| err.to_string())?;
-        let mut progress = Progress::new(transfer.id, total, emit);
-        let mut buffer = vec![0u8; CHUNK];
-        loop {
-            if transfer.cancel.load(Ordering::Relaxed) {
-                return Err("Cancelled".to_string());
-            }
-            let read = remote
-                .read(&mut buffer)
-                .await
-                .map_err(|err| err.to_string())?;
-            if read == 0 {
-                break;
-            }
-            local
-                .write_all(&buffer[..read])
-                .await
-                .map_err(|err| err.to_string())?;
-            progress.add(read);
-        }
-        local.flush().await.map_err(|err| err.to_string())?;
-        drop(local);
-        tokio::fs::rename(&partial, &transfer.local)
-            .await
-            .map_err(|err| err.to_string())
-    }
-    .await;
-    if result.is_err() {
-        let _ = tokio::fs::remove_file(&partial).await;
-    }
-    result
-}
-
-/// Upload, removing the incomplete remote file if it fails or is cancelled.
-async fn upload(sftp: &SftpSession, transfer: &Transfer, emit: &Emit) -> Result<(), String> {
-    let mut local = tokio::fs::File::open(&transfer.local)
-        .await
-        .map_err(|err| err.to_string())?;
-    let total = local.metadata().await.map(|meta| meta.len()).unwrap_or(0);
-    let mut remote = sftp
-        .create(transfer.remote.clone())
-        .await
-        .map_err(|err| err.to_string())?;
-    let result = async {
-        let mut progress = Progress::new(transfer.id, total, emit);
-        let mut buffer = vec![0u8; CHUNK];
-        loop {
-            if transfer.cancel.load(Ordering::Relaxed) {
-                return Err("Cancelled".to_string());
-            }
-            let read = local
-                .read(&mut buffer)
-                .await
-                .map_err(|err| err.to_string())?;
-            if read == 0 {
-                break;
-            }
-            remote
-                .write_all(&buffer[..read])
-                .await
-                .map_err(|err| err.to_string())?;
-            progress.add(read);
-        }
-        remote.shutdown().await.map_err(|err| err.to_string())
-    }
-    .await;
-    if result.is_err() {
-        drop(remote);
-        let _ = sftp.remove_file(transfer.remote.clone()).await;
-    }
-    result
 }
 
 #[cfg(test)]

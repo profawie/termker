@@ -398,6 +398,16 @@ impl App {
         )
     }
 
+    /// Copy a file or folder between two places in the background.
+    pub fn spawn_copy(
+        &self,
+        from: crate::sftp::Place,
+        to: crate::sftp::Place,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> crate::sftp::CopyHandle {
+        crate::sftp::spawn_copy(self.runtime.handle(), from, to, wake)
+    }
+
     /// Stop a forward if it is running.
     pub fn stop_forward(&mut self, forward_id: Uuid) {
         self.active_forwards
@@ -428,7 +438,7 @@ impl App {
                 RichText::new(">_")
                     .monospace()
                     .size(20.0)
-                    .color(theme.accent),
+                    .color(theme.accent_text),
             );
             ui.label(RichText::new(crate::APP_NAME).size(18.0).strong());
         });
@@ -474,7 +484,7 @@ impl App {
         let page = Page::Session(session.id);
         let selected = self.page == page;
         let dot = match session.state {
-            SessionState::Connected => theme.accent,
+            SessionState::Connected => theme.accent_text,
             SessionState::Closed(Some(_)) => theme.danger,
             _ => theme.text_dim,
         };
