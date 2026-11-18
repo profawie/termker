@@ -31,14 +31,16 @@ fn main() {
     fs::write(dest, out).unwrap();
 }
 
-/// Name of every dependency in the `[dependencies]` section.
+/// Name of every dependency, including platform-specific ones.
 fn direct_dependencies(manifest: &str) -> Vec<String> {
     let mut names = Vec::new();
     let mut in_deps = false;
     for line in manifest.lines() {
         let line = line.trim();
         if line.starts_with('[') {
-            in_deps = line == "[dependencies]";
+            // `[dependencies]` and platform-specific `[target.'…'.dependencies]`.
+            in_deps = line == "[dependencies]"
+                || (line.starts_with("[target.") && line.ends_with(".dependencies]"));
             continue;
         }
         if !in_deps || line.is_empty() || line.starts_with('#') {

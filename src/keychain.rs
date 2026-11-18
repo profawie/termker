@@ -249,6 +249,17 @@ fn looks_encrypted(text: &str) -> bool {
     })
 }
 
+/// Store the key file for a credential a security key just created.
+pub fn add_security_key(
+    store: &KeyStore,
+    credential: &crate::fido::NewCredential,
+    name: &str,
+) -> Result<KeyEntry, KeyError> {
+    let key = crate::fido::private_key(credential, crate::fido::APPLICATION, name.trim())
+        .map_err(|err| KeyError::Generate(err.to_string()))?;
+    save(store, key, name, "")
+}
+
 fn save(
     store: &KeyStore,
     mut key: PrivateKey,
@@ -295,7 +306,31 @@ fn algorithm_name(key: &PublicKey) -> String {
             Some(rsa) => format!("RSA {}", rsa.key_size()),
             None => "RSA".to_string(),
         },
+        Algorithm::SkEd25519 => SECURITY_KEY_ED25519.to_string(),
+        Algorithm::SkEcdsaSha2NistP256 => SECURITY_KEY_ECDSA.to_string(),
         other => other.as_str().to_string(),
+    }
+}
+
+const SECURITY_KEY_ED25519: &str = "ED25519-SK";
+const SECURITY_KEY_ECDSA: &str = "ECDSA-SK";
+
+impl KeyEntry {
+    /// Whether the private key lives on a FIDO2 security key, so the file
+    /// on disk is only a handle to it.
+    pub fn is_security_key(&self) -> bool {
+        self.algorithm == SECURITY_KEY_ED25519 || self.algorithm == SECURITY_KEY_ECDSA
+    }
+
+    /// How the private key is protected, for display.
+    pub fn protection(&self) -> &'static str {
+        if self.is_security_key() {
+            "on a security key"
+        } else if self.encrypted {
+            "passphrase protected"
+        } else {
+            "no passphrase"
+        }
     }
 }
 
@@ -524,6 +559,37 @@ ggDAzmZTpgoe5ffBoeYf9YjVKY4Ok8T0xpLXEiy/OyBXHPorIwqHrkkEcsXe7xpv
         assert!(locked.encrypted);
         assert_eq!(locked.fingerprint, plain.fingerprint);
         assert!(read(&store, &locked).decrypt("pw").is_ok());
+    }
+
+    #[test]
+    fn security_key_entries_are_marked_as_such() {
+        use crate::fido::{APPLICATION, Authenticator, SkKind, tests::SoftwareKey};
+        let store = store("keychain-sk");
+        let device = SoftwareKey::default();
+        for (kind, algorithm) in [
+            (SkKind::Ed25519, "ED25519-SK"),
+            (SkKind::EcdsaP256, "ECDSA-SK"),
+        ] {
+            let credential = device
+                .make_credential(kind, APPLICATION, "me", None)
+                .unwrap();
+            let entry = add_security_key(&store, &credential, " token ").unwrap();
+            assert_eq!(entry.name, "token");
+            assert_eq!(entry.algorithm, algorithm);
+            assert!(entry.is_security_key());
+            assert_eq!(entry.protection(), "on a security key");
+            assert!(entry.public_key.starts_with("sk-"));
+
+            // A key file written by `ssh-keygen -t ed25519-sk` has the same
+            // format, so importing one gives the same kind of entry.
+            let text = std::fs::read_to_string(store.path(entry.id)).unwrap();
+            let imported = import(&store, &text, "imported", "").unwrap();
+            assert!(imported.is_security_key());
+            assert_eq!(imported.fingerprint, entry.fingerprint);
+        }
+        let plain = generate(&store, KeyKind::Ed25519, "plain", "").unwrap();
+        assert!(!plain.is_security_key());
+        assert_eq!(plain.protection(), "no passphrase");
     }
 
     #[test]
