@@ -4,6 +4,7 @@ pub mod about;
 pub mod forwards;
 pub mod hosts;
 pub mod keychain;
+pub mod os;
 pub mod session;
 pub mod settings;
 pub mod sftp;

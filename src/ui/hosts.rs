@@ -774,6 +774,9 @@ enum CardAction {
     Connect,
 }
 
+/// Width of the system badge in the top right corner of a card.
+const OS_BADGE_SIZE: f32 = 20.0;
+
 /// One host card, with its Connect and Edit buttons.
 fn host_card(ui: &mut egui::Ui, app: &App, host: &Host, selected: bool) -> CardAction {
     let theme = app.theme;
@@ -799,9 +802,25 @@ fn host_card(ui: &mut egui::Ui, app: &App, host: &Host, selected: bool) -> CardA
         ui.style_mut().interaction.selectable_labels = false;
         ui.set_width(CARD_INNER_WIDTH);
         ui.vertical(|ui| {
-            ui.add(
-                egui::Label::new(RichText::new(host.display_name()).size(15.0).strong()).truncate(),
-            );
+            let name =
+                egui::Label::new(RichText::new(host.display_name()).size(15.0).strong()).truncate();
+            // The system it ran the last time it was connected to sits top
+            // right. The row is as high without one, so cards stay equal.
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    match &host.os {
+                        Some(os) => {
+                            super::os::badge(ui, os, OS_BADGE_SIZE);
+                        }
+                        None => {
+                            ui.allocate_space(egui::vec2(0.0, OS_BADGE_SIZE));
+                        }
+                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add(name)
+                    });
+                });
+            });
             ui.add(
                 egui::Label::new(
                     RichText::new(app.data.target(host))
