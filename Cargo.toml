@@ -26,6 +26,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "time", "io-util", "fs"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+winresource = { version = "0.1", default-features = false }
 
 # The app's own crates.
 termker-core = { path = "crates/core" }
@@ -50,6 +51,10 @@ termker-ssh.workspace = true
 termker-terminal.workspace = true
 tokio.workspace = true
 uuid.workspace = true
+
+# Build time only: puts the icon and version details into the Windows .exe.
+[build-dependencies]
+winresource.workspace = true
 
 # Release builds favour a small program. Measured on the Windows build
 # (x86_64-pc-windows-gnu): 23.5 MB with thin LTO, 17.3 MB with fat LTO and

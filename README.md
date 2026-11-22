@@ -1,3 +1,5 @@
+<img src="assets/icon/termker-256.png" alt="termker logo" width="96">
+
 # termker
 
 A desktop SSH client for individuals, written entirely in Rust. Runs on Windows and macOS.

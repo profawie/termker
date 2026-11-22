@@ -1,5 +1,6 @@
 //! Generates the library version list straight from `Cargo.lock`, so the
 //! About screen always shows the versions actually built into the app.
+//! For Windows it also puts the icon and version details into the `.exe`.
 
 use std::{collections::BTreeMap, env, fs, path::Path};
 
@@ -29,6 +30,28 @@ fn main() {
 
     let dest = Path::new(&env::var("OUT_DIR").unwrap()).join("dependency_versions.rs");
     fs::write(dest, out).unwrap();
+
+    windows_resources();
+}
+
+/// Icon and file details (name, version, description) of the Windows
+/// program, as shown by Explorer and the taskbar. Needs `windres`, which
+/// comes with the MinGW-w64 compiler the Windows build already uses.
+fn windows_resources() {
+    println!("cargo:rerun-if-changed=assets/icon/termker.ico");
+    // The build script runs on the building computer; ask what it builds for.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    let mut resources = winresource::WindowsResource::new();
+    resources
+        .set_icon("assets/icon/termker.ico")
+        .set("ProductName", "termker")
+        .set("FileDescription", "termker")
+        .set("LegalCopyright", "MIT OR Apache-2.0");
+    resources
+        .compile()
+        .expect("windres (part of MinGW-w64) embeds the Windows icon");
 }
 
 /// Name of every third-party library. They are all declared once, in the
