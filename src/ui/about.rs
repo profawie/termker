@@ -17,12 +17,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     super::card(&theme).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(">_")
-                    .monospace()
-                    .size(28.0)
-                    .color(theme.accent_text),
-            );
+            ui.add(egui::Image::new(&app.logo).fit_to_exact_size(egui::vec2(56.0, 56.0)));
             ui.vertical(|ui| {
                 ui.label(
                     RichText::new(format!("{} {}", crate::APP_NAME, crate::APP_VERSION))

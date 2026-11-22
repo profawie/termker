@@ -9,6 +9,7 @@
 //! - `termker-terminal`: terminal emulator and shell sessions
 
 mod app;
+mod icon;
 mod libs;
 mod theme;
 mod ui;
@@ -25,6 +26,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title(APP_NAME)
+            .with_icon(icon::window_icon())
             .with_inner_size([1180.0, 760.0])
             .with_min_inner_size([860.0, 540.0]),
         ..Default::default()

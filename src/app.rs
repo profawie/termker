@@ -135,6 +135,8 @@ pub struct App {
     pub key_store: KeyStore,
     pub secrets: SecretStore,
     pub sessions: Vec<Session>,
+    /// The termker logo, drawn in the sidebar and on the About page.
+    pub logo: egui::TextureHandle,
 }
 
 /// The terminal theme from the settings, with the user's own text and
@@ -245,6 +247,7 @@ impl App {
             secrets: SecretStore::os(data_dir.join("secrets.json")),
             keychain_page: KeychainPage::default(),
             sessions: Vec::new(),
+            logo: crate::icon::logo_texture(&cc.egui_ctx),
             store,
             data,
             theme,
@@ -459,12 +462,7 @@ impl App {
         let theme = self.theme;
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(">_")
-                    .monospace()
-                    .size(20.0)
-                    .color(theme.accent_text),
-            );
+            ui.add(egui::Image::new(&self.logo).fit_to_exact_size(egui::vec2(24.0, 24.0)));
             ui.label(RichText::new(crate::APP_NAME).size(18.0).strong());
         });
         ui.add_space(14.0);

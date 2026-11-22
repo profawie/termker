@@ -78,6 +78,10 @@ or MSYS2 (https://www.msys2.org), then in the "MSYS2 MINGW64" shell:
     pacman -S mingw-w64-x86_64-gcc
 "@
 }
+# windres puts the icon into the .exe. It sits next to gcc in MinGW-w64.
+if (-not (Get-Command windres -ErrorAction SilentlyContinue)) {
+    Fail "windres was not found next to gcc. Reinstall MinGW-w64 (see above); windres is part of it."
+}
 $machine = (& gcc -dumpmachine | Out-String).Trim()
 if ($machine -ne 'x86_64-w64-mingw32') {
     Fail "the gcc on PATH builds for '$machine'; a 64-bit MinGW-w64 gcc (x86_64-w64-mingw32) is needed"

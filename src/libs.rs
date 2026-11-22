@@ -135,6 +135,13 @@ pub const LIBRARIES: &[LibraryInfo] = &[
         website: "https://github.com/uuid-rs/uuid",
         license: "MIT OR Apache-2.0",
     },
+    LibraryInfo {
+        name: "winresource",
+        category: Category::Foundation,
+        purpose: "Icon and version details of the Windows program (used while building)",
+        website: "https://github.com/BenjaminRi/winresource",
+        license: "MIT",
+    },
 ];
 
 impl LibraryInfo {

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <title>termker</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#16212F"/>
+      <stop offset="1" stop-color="#070B10"/>
+    </linearGradient>
+    <linearGradient id="prompt" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6CB6FF"/>
+      <stop offset="1" stop-color="#1F7FD6"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="228" fill="url(#bg)"/>
+  <rect x="14" y="14" width="996" height="996" rx="214" fill="none" stroke="#58A6FF" stroke-opacity="0.35" stroke-width="28"/>
+  <path d="M276 322 L514 512 L276 702" fill="none" stroke="url(#prompt)" stroke-width="112" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="566" y="646" width="238" height="112" rx="28" fill="#33FF66"/>
+</svg>
