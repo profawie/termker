@@ -10,6 +10,8 @@ use crate::{
 
 const CARD_INNER_WIDTH: f32 = 240.0;
 /// Card width including inner margin (14 per side) and border.
+/// Space inside a card, as [`super::card`] sets it.
+const CARD_PADDING: f32 = 14.0;
 const CARD_OUTER_WIDTH: f32 = CARD_INNER_WIDTH + 30.0;
 
 #[derive(Default)]
@@ -54,9 +56,9 @@ fn shown(group: &str) -> String {
 #[derive(Clone)]
 struct DraggedHost {
     id: Uuid,
-    name: String,
     /// Group it is in now.
     group: String,
+    grab: super::Grab,
 }
 
 /// What the user asked for on a group's header row.
@@ -270,7 +272,14 @@ impl HostsPage {
                 Some(group) => format!("Move to {}", shown(group)),
                 None => "Drop on a group to move".to_string(),
             };
-            super::drag_chip(ui.ctx(), &theme, &dragged.name, &hint, over_group.is_some());
+            // The card itself comes along with the pointer.
+            if let Some(host) = app.data.host(dragged.id) {
+                let ok = over_group.is_some();
+                let padding = egui::Vec2::splat(CARD_PADDING);
+                super::drag_float(ui.ctx(), &theme, dragged.grab, padding, &hint, ok, |ui| {
+                    host_card_body(ui, app, host);
+                });
+            }
         }
         drop(sections);
         if let Some((id, group)) = moved {
@@ -787,20 +796,42 @@ fn host_card(ui: &mut egui::Ui, app: &App, host: &Host, selected: bool) -> CardA
     let mut action = CardAction::None;
     // The card can be picked up anywhere and dropped on another group.
     let drag_id = ui.scope_id().with(("drag", host.id));
-    if super::drag_area(ui, drag_id) {
+    if let Some(grab) = super::drag_area(ui, drag_id) {
         egui::DragAndDrop::set_payload(
             ui.ctx(),
             DraggedHost {
                 id: host.id,
-                name: host.display_name().to_string(),
                 group: host.group.clone(),
+                grab,
             },
         );
     }
-    let card = frame.show(ui, |ui| {
-        // Dragging over the text moves the card instead of selecting it.
-        ui.style_mut().interaction.selectable_labels = false;
-        ui.set_width(CARD_INNER_WIDTH);
+    // While the card is carried around, only a faint copy stays behind.
+    let lifted = egui::DragAndDrop::payload::<DraggedHost>(ui.ctx())
+        .is_some_and(|dragged| dragged.id == host.id);
+    let card = ui
+        .scope(|ui| {
+            if lifted {
+                ui.set_opacity(super::DRAGGED_OPACITY);
+            }
+            frame.show(ui, |ui| {
+                ui.set_width(CARD_INNER_WIDTH);
+                action = host_card_body(ui, app, host);
+            })
+        })
+        .inner;
+    super::drag_area_drawn(ui, drag_id, card.response.rect);
+    action
+}
+
+/// What is inside a host card. Also drawn under the pointer while the card
+/// is dragged.
+fn host_card_body(ui: &mut egui::Ui, app: &App, host: &Host) -> CardAction {
+    let theme = app.theme;
+    let mut action = CardAction::None;
+    // Dragging over the text moves the card instead of selecting it.
+    ui.style_mut().interaction.selectable_labels = false;
+    {
         ui.vertical(|ui| {
             let name =
                 egui::Label::new(RichText::new(host.display_name()).size(15.0).strong()).truncate();
@@ -852,8 +883,7 @@ fn host_card(ui: &mut egui::Ui, app: &App, host: &Host, selected: bool) -> CardA
                 action = CardAction::Connect;
             }
         });
-    });
-    super::drag_area_drawn(ui, drag_id, card.response.rect);
+    }
     action
 }
 

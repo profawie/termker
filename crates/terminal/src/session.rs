@@ -1,6 +1,8 @@
 //! One open terminal tab: a background SSH session plus the emulator that
 //! holds its screen.
 
+use std::time::{Duration, Instant};
+
 use uuid::Uuid;
 
 use termker_core::secrets::SecretStore;
@@ -11,6 +13,11 @@ use termker_ssh::{
 use crate::emulator::{Emulator, Size};
 
 const INITIAL_SIZE: Size = Size { cols: 80, rows: 24 };
+
+/// A shell that ends this soon after connecting never gave the user a
+/// prompt (an account without a login shell, for one). Its tab stays open so
+/// what the host said can be read.
+const SHORTEST_SESSION: Duration = Duration::from_secs(2);
 
 pub enum SessionState {
     /// Still connecting; the text says what is happening right now.
@@ -36,6 +43,10 @@ pub struct Session {
     /// What the host runs, once it has said so.
     pub os: Option<RemoteOs>,
     os_is_news: bool,
+    /// When the shell became usable.
+    connected_at: Option<Instant>,
+    /// The user ended the shell on the host, with `exit` or `logout`.
+    logged_out: bool,
     handle: SessionHandle,
 }
 
@@ -70,6 +81,8 @@ impl Session {
             scroll_remainder: 0.0,
             os: None,
             os_is_news: false,
+            connected_at: None,
+            logged_out: false,
             handle,
         }
     }
@@ -91,6 +104,14 @@ impl Session {
         matches!(self.state, SessionState::Closed(_))
     }
 
+    /// True once the user has ended the shell on the host themselves, with
+    /// `exit`, `logout` or Ctrl+D. Nothing is left to do in such a tab. False
+    /// for a lost connection, a failure, or a shell that ended right after
+    /// connecting.
+    pub fn logged_out(&self) -> bool {
+        self.logged_out
+    }
+
     /// Apply everything the background session reported since the last call.
     pub fn poll(&mut self) {
         while let Ok(event) = self.handle.events.try_recv() {
@@ -106,6 +127,7 @@ impl Session {
                 }
                 SessionEvent::Connected => {
                     self.state = SessionState::Connected;
+                    self.connected_at = Some(Instant::now());
                     self.prompt = None;
                     // The size may have changed while connecting.
                     let size = self.emulator.size();
@@ -124,7 +146,12 @@ impl Session {
                     self.os = Some(os);
                     self.os_is_news = true;
                 }
-                SessionEvent::Closed { error } => {
+                SessionEvent::Closed { error, exited } => {
+                    self.logged_out = exited
+                        && error.is_none()
+                        && self
+                            .connected_at
+                            .is_some_and(|at| at.elapsed() >= SHORTEST_SESSION);
                     self.prompt = None;
                     self.secret_input.clear();
                     self.state = SessionState::Closed(error);

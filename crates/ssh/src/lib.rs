@@ -605,8 +605,12 @@ pub enum SessionEvent {
     /// `Connected`, or never if the host does not say.
     RemoteOs(RemoteOs),
     /// The session ended. `error` is `None` if it closed normally.
+    /// `exited` is true when the shell on the host ended by itself, as it
+    /// does after `exit` or `logout`, and not because the connection was
+    /// lost or the tab was closed.
     Closed {
         error: Option<String>,
+        exited: bool,
     },
 }
 
@@ -666,8 +670,9 @@ pub fn spawn_shell(
         }
         .await;
         emit(SessionEvent::Closed {
+            exited: matches!(result, Ok(true)),
             error: match result {
-                Ok(()) | Err(SshError::Cancelled) => None,
+                Ok(_) | Err(SshError::Cancelled) => None,
                 Err(err) => Some(err.to_string()),
             },
         });
@@ -683,12 +688,15 @@ async fn commands_closed(commands: &mut mpsc::UnboundedReceiver<SessionCommand>)
     while commands.recv().await.is_some() {}
 }
 
+/// Runs the shell until it ends. Returns `true` if the shell ended by
+/// itself (the host sent its exit status), `false` if the tab was closed or
+/// the channel went away without one.
 async fn run_shell(
     connection: &Connection,
     (cols, rows): (u16, u16),
     commands: &mut mpsc::UnboundedReceiver<SessionCommand>,
     emit: &Arc<dyn Fn(SessionEvent) + Send + Sync>,
-) -> Result<(), SshError> {
+) -> Result<bool, SshError> {
     let mut channel = connection.target().channel_open_session().await?;
     channel
         .request_pty(false, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
@@ -701,6 +709,7 @@ async fn run_shell(
     let detect_os = os::detect(connection.target());
     tokio::pin!(detect_os);
     let mut os_asked = false;
+    let mut exited = false;
 
     loop {
         tokio::select! {
@@ -715,14 +724,15 @@ async fn run_shell(
                 Some(SessionCommand::Resize { cols, rows }) => {
                     channel.window_change(cols as u32, rows as u32, 0, 0).await?;
                 }
-                None => return Ok(()),
+                None => return Ok(false),
             },
             message = channel.wait() => match message {
                 Some(ChannelMsg::Data { data }) => emit(SessionEvent::Output(data.to_vec())),
                 Some(ChannelMsg::ExtendedData { data, .. }) => {
                     emit(SessionEvent::Output(data.to_vec()));
                 }
-                Some(ChannelMsg::Close) | None => return Ok(()),
+                Some(ChannelMsg::ExitStatus { .. }) => exited = true,
+                Some(ChannelMsg::Close) | None => return Ok(exited),
                 Some(_) => {}
             },
         }

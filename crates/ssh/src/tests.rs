@@ -229,6 +229,19 @@ impl server::Handler for TestServer {
         if self.forwarded.contains(&channel) {
             return Ok(());
         }
+        // Like a shell: `exit` ends it with a status. `drop` stands for a
+        // channel that goes away without one.
+        if data == b"exit\r" {
+            session.data(channel, b"logout\r\n".to_vec())?;
+            session.exit_status_request(channel, 0)?;
+            session.eof(channel)?;
+            session.close(channel)?;
+            return Ok(());
+        }
+        if data == b"drop\r" {
+            session.close(channel)?;
+            return Ok(());
+        }
         let mut reply = b"echo:".to_vec();
         reply.extend_from_slice(data);
         session.data(channel, reply)?;
@@ -900,7 +913,7 @@ async fn shell_session_streams_output_input_and_resize() {
             Ok(SessionEvent::Prompt(prompt)) => answers.answer(prompt),
             Ok(SessionEvent::Connected) => connected = true,
             Ok(SessionEvent::Output(bytes)) => output.extend_from_slice(&bytes),
-            Ok(SessionEvent::Closed { error }) => panic!("closed: {error:?}"),
+            Ok(SessionEvent::Closed { error, .. }) => panic!("closed: {error:?}"),
             Ok(SessionEvent::Status(_) | SessionEvent::RemoteOs(_)) | Err(_) => {}
         }
         if connected && !sent && output.ends_with(b"ready\r\n") {
@@ -949,7 +962,7 @@ async fn shell_session_learns_the_system_of_the_target_behind_a_jump_host() {
             Ok(SessionEvent::Prompt(prompt)) => answers.answer(prompt),
             Ok(SessionEvent::Output(bytes)) => output.extend_from_slice(&bytes),
             Ok(SessionEvent::RemoteOs(os)) => found = Some(os),
-            Ok(SessionEvent::Closed { error }) => panic!("closed: {error:?}"),
+            Ok(SessionEvent::Closed { error, .. }) => panic!("closed: {error:?}"),
             Ok(SessionEvent::Status(_) | SessionEvent::Connected) | Err(_) => {}
         }
         tokio::task::yield_now().await;
@@ -961,6 +974,48 @@ async fn shell_session_learns_the_system_of_the_target_behind_a_jump_host() {
     assert!(jump.commands_run.lock().unwrap().is_empty());
     assert_eq!(target.commands_run.lock().unwrap().len(), 1);
     assert!(!String::from_utf8_lossy(&output).contains("TERMKER"));
+}
+
+/// Opens a shell, types `input` once it is ready and returns how the session
+/// said it closed: the error and whether the shell ended by itself.
+async fn close_after_typing(name: &str, input: &[u8]) -> (Option<String>, bool) {
+    let port = start(TestServer::default()).await;
+    let answers = Answers::new(true, &[PASSWORD]);
+    let session = spawn_shell(
+        &tokio::runtime::Handle::current(),
+        vec![hop("a", port)],
+        known_hosts(name),
+        SecretStore::disabled(),
+        (80, 24),
+        || {},
+    );
+    let mut output = Vec::new();
+    let mut sent = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(std::time::Instant::now() < deadline, "timed out");
+        match session.events.recv_timeout(Duration::from_millis(50)) {
+            Ok(SessionEvent::Prompt(prompt)) => answers.answer(prompt),
+            Ok(SessionEvent::Output(bytes)) => output.extend_from_slice(&bytes),
+            Ok(SessionEvent::Closed { error, exited }) => return (error, exited),
+            Ok(_) | Err(_) => {}
+        }
+        if !sent && output.ends_with(b"ready\r\n") {
+            session.send(SessionCommand::Input(input.to_vec()));
+            sent = true;
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_session_says_when_the_shell_exited_by_itself() {
+    assert_eq!(close_after_typing("exit", b"exit\r").await, (None, true));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_session_closed_without_exit_status_did_not_exit() {
+    assert_eq!(close_after_typing("drop", b"drop\r").await, (None, false));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -983,7 +1038,7 @@ async fn shell_session_reports_connection_errors() {
             .recv_timeout(Duration::from_secs(10))
             .unwrap()
         {
-            SessionEvent::Closed { error } => {
+            SessionEvent::Closed { error, .. } => {
                 assert!(error.unwrap().starts_with("Network error"));
                 break;
             }
