@@ -625,6 +625,10 @@ impl eframe::App for App {
         if learned {
             self.save();
         }
+        // Typing `exit` in a session closes its tab as well.
+        while let Some(index) = self.sessions.iter().position(Session::logged_out) {
+            self.close_session(index);
+        }
         for forward in &mut self.active_forwards {
             forward.poll();
         }

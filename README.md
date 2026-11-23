@@ -4,7 +4,7 @@
 
 A desktop SSH client for individuals, written entirely in Rust. Runs on Windows and macOS.
 
-Version: 0.2.0
+Version: 0.2.1
 
 | Dark | Light |
 | --- | --- |
@@ -16,10 +16,10 @@ Version: 0.2.0
 
 | Feature | Status |
 | --- | --- |
-| Host management with search and groups, including groups inside groups (Client > Prod > server), that you can add, rename, collapse and delete; drag a host onto a group to move it | Done |
+| Host management with search and groups, including groups inside groups (Client > Prod > server), that you can add, rename, collapse and delete; drag a host card onto a group to move it | Done |
 | Dark, light or system appearance for the app; separate terminal color themes (default: green text on black) | Done |
 | About screen listing every library, its version and website | Done |
-| SSH terminal (password or key file) with host key verification | Done |
+| SSH terminal (password or key file) with host key verification; typing `exit` closes the tab | Done |
 | Jump server (ProxyJump), any number of hops | Done |
 | Port forwarding: local, remote and dynamic (SOCKS5) | Done |
 | SFTP: two panes side by side, each showing this computer or a host; drag files and folders from one pane to the other to copy them, including host to host; rename, delete, new folder | Done |

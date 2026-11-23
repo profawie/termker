@@ -36,7 +36,13 @@ struct Dragged {
     /// Pane it comes from.
     from: usize,
     entry: Entry,
+    grab: super::Grab,
 }
+
+/// Space around a dragged row inside the card it is carried in.
+const DRAG_PADDING: egui::Vec2 = egui::vec2(12.0, 6.0);
+/// Widest a dragged row is shown.
+const DRAG_WIDTH: f32 = 340.0;
 
 struct Replace {
     /// Pane the item comes from.
@@ -458,17 +464,31 @@ impl SftpPage {
             if blocked.is_none() {
                 super::drop_outline(ui, &theme, rects[to], over);
             }
-            super::drag_chip(
-                ui.ctx(),
-                &theme,
-                &dragged.entry.name,
-                if over || blocked.is_some() {
-                    &hint
-                } else {
-                    "Drop on the other pane to copy"
-                },
-                over && blocked.is_none(),
-            );
+            // The row itself comes along with the pointer.
+            let hint = if over || blocked.is_some() {
+                &hint
+            } else {
+                "Drop on the other pane to copy"
+            };
+            let ok = over && blocked.is_none();
+            let entry = &dragged.entry;
+            let grab = dragged.grab.framed(DRAG_PADDING, DRAG_WIDTH);
+            super::drag_float(ui.ctx(), &theme, grab, DRAG_PADDING, hint, ok, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if entry.kind != EntryKind::Dir {
+                            fixed(ui, 62.0, &sftp::format_size(entry.size), &theme);
+                        }
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            icon(ui, &theme, entry.kind);
+                            ui.add(
+                                egui::Label::new(RichText::new(&entry.name).strong()).truncate(),
+                            );
+                        });
+                    });
+                });
+            });
             if over && blocked.is_none() && ui.input(|input| input.pointer.any_released()) {
                 actions[dragged.from] = Some(PaneAction::Transfer(dragged.entry.clone()));
             }
@@ -959,6 +979,7 @@ fn file_list(ui: &mut egui::Ui, theme: &Theme, pane: &mut Pane, index: usize) {
         .show(ui, |ui| {
             // Dragging over a name moves the row instead of selecting text.
             ui.style_mut().interaction.selectable_labels = false;
+            let lifted = egui::DragAndDrop::payload::<Dragged>(ui.ctx());
             for entry in &pane.entries {
                 let is_dir = entry.kind == EntryKind::Dir;
                 let modified = entry.modified.map(sftp::format_time).unwrap_or_default();
@@ -966,16 +987,25 @@ fn file_list(ui: &mut egui::Ui, theme: &Theme, pane: &mut Pane, index: usize) {
                 // pane. Drives and special files cannot be copied.
                 let draggable = !drives && entry.kind != EntryKind::Other;
                 let drag_id = ui.scope_id().with(("drag", &entry.name));
-                if draggable && super::drag_area(ui, drag_id) {
+                if let Some(grab) = super::drag_area(ui, drag_id).filter(|_| draggable) {
                     egui::DragAndDrop::set_payload(
                         ui.ctx(),
                         Dragged {
                             from: index,
                             entry: entry.clone(),
+                            grab,
                         },
                     );
                 }
+                // While the row is carried around, only a faint copy stays
+                // behind.
+                let lifted = lifted.as_ref().is_some_and(|dragged| {
+                    dragged.from == index && dragged.entry.name == entry.name
+                });
                 let row = ui.horizontal(|ui| {
+                    if lifted {
+                        ui.set_opacity(super::DRAGGED_OPACITY);
+                    }
                     ui.spacing_mut().item_spacing.x = 6.0;
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(10.0);

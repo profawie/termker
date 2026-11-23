@@ -141,37 +141,113 @@ pub fn field(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {
     );
 }
 
-/// While something is dragged: its name in a small box next to the pointer,
-/// with a line under it saying what dropping here does. `ok` is false when
+/// How a card was picked up, kept while it is dragged so its copy under the
+/// pointer stays where the hand took hold of it.
+#[derive(Clone, Copy)]
+pub struct Grab {
+    /// From the top left corner of the card to the pointer.
+    offset: egui::Vec2,
+    /// Size of the card where it lies.
+    pub size: egui::Vec2,
+    /// When it was picked up, in egui's clock.
+    at: f64,
+}
+
+impl Grab {
+    /// For a row that has no frame of its own where it lies: the card it
+    /// becomes while dragged is `padding` larger on every side and at most
+    /// `max_width` wide.
+    pub fn framed(mut self, padding: egui::Vec2, max_width: f32) -> Self {
+        self.size += 2.0 * padding;
+        self.offset += padding;
+        if self.size.x > max_width {
+            self.size.x = max_width;
+            // Keep hold of the card when the row was taken far to the right.
+            self.offset.x = self.offset.x.min(max_width - 24.0);
+        }
+        self
+    }
+}
+
+/// Seconds a card takes to rise off the page once it is picked up.
+const LIFT_TIME: f64 = 0.12;
+
+/// The dragged card itself, lifted off the page: it follows the pointer
+/// from the spot it was taken by, a little larger and with a shadow under
+/// it. `content` draws the card's inside, `padding` away from its edge, at
+/// the width it has where it lies.
+/// A line under the card says what dropping here does; `ok` is false when
 /// dropping here does nothing.
-pub fn drag_chip(ctx: &egui::Context, theme: &Theme, name: &str, hint: &str, ok: bool) {
+pub fn drag_float(
+    ctx: &egui::Context,
+    theme: &Theme,
+    grab: Grab,
+    padding: egui::Vec2,
+    hint: &str,
+    ok: bool,
+    content: impl FnOnce(&mut egui::Ui),
+) {
     let Some(pointer) = ctx.pointer_latest_pos() else {
         return;
     };
-    egui::Area::new(egui::Id::unique("drag_chip"))
+    ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+    // 0 on the page, 1 fully lifted.
+    let lift = (((ctx.input(|input| input.time) - grab.at) / LIFT_TIME) as f32).clamp(0.0, 1.0);
+    if lift < 1.0 {
+        ctx.request_repaint();
+    }
+    let dark = ctx.global_style().visuals.dark_mode;
+    let shadow = egui::Shadow {
+        offset: [0, (10.0 * lift) as i8],
+        blur: (28.0 * lift) as u8,
+        spread: 0,
+        color: egui::Color32::from_black_alpha(if dark { 150 } else { 70 }),
+    };
+    let area = egui::Area::new(egui::Id::unique("drag_float"))
         .order(egui::Order::Tooltip)
-        .fixed_pos(pointer + egui::vec2(14.0, 14.0))
+        .fixed_pos(pointer - grab.offset - egui::vec2(0.0, 3.0 * lift))
         .interactable(false)
         .show(ctx, |ui| {
+            ui.spacing_mut().item_spacing.y = 8.0;
             egui::Frame::new()
                 .fill(theme.surface)
-                .stroke(egui::Stroke::new(1.0, theme.accent_text))
-                .corner_radius(egui::CornerRadius::same(6))
-                .inner_margin(egui::Margin::symmetric(10, 6))
+                .stroke(egui::Stroke::new(1.5, theme.accent_text))
+                .corner_radius(egui::CornerRadius::same(8))
+                .inner_margin(egui::Margin::symmetric(padding.x as i8, padding.y as i8))
+                .shadow(shadow)
                 .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.add(egui::Label::new(RichText::new(name).strong()).extend());
-                    if !hint.is_empty() {
-                        let color = if ok {
-                            theme.accent_text
-                        } else {
-                            theme.text_dim
-                        };
-                        ui.add(egui::Label::new(RichText::new(hint).small().color(color)).extend());
-                    }
+                    ui.set_width(grab.size.x - 2.0 * padding.x);
+                    ui.set_min_height(grab.size.y - 2.0 * padding.y);
+                    content(ui);
                 });
+            if !hint.is_empty() {
+                let (fill, text) = if ok {
+                    (theme.accent, theme.on_accent)
+                } else {
+                    (theme.panel, theme.text_dim)
+                };
+                egui::Frame::new()
+                    .fill(fill)
+                    .corner_radius(egui::CornerRadius::same(10))
+                    .inner_margin(egui::Margin::symmetric(10, 3))
+                    .show(ui, |ui| {
+                        ui.add(egui::Label::new(RichText::new(hint).small().color(text)).extend());
+                    });
+            }
         });
+    // Grown around the pointer, so the spot it is held by does not move.
+    let scale = 1.0 + 0.03 * lift;
+    ctx.set_transform_layer(
+        area.response.layer_id,
+        egui::emath::TSTransform::from_translation(pointer.to_vec2())
+            * egui::emath::TSTransform::from_scaling(scale)
+            * egui::emath::TSTransform::from_translation(-pointer.to_vec2()),
+    );
 }
+
+/// How much of a card stays visible where it lies while its copy is being
+/// dragged.
+pub const DRAGGED_OPACITY: f32 = 0.3;
 
 /// Outline of a place the dragged thing can be dropped on, brighter while
 /// the pointer is over it.
@@ -203,16 +279,22 @@ pub fn drop_outline(ui: &egui::Ui, theme: &Theme, rect: egui::Rect, over: bool) 
 
 /// Makes an area draggable without taking clicks away from the buttons and
 /// links drawn in it. Call this before drawing the area, then
-/// [`drag_area_drawn`] with the space it took. Returns `true` in the frame a
-/// drag starts.
+/// [`drag_area_drawn`] with the space it took. Returns how it was picked up
+/// in the frame a drag starts.
 ///
 /// The drag has to be registered before the content so the content ends up
 /// on top of it; where the content was is remembered from the last frame.
-pub fn drag_area(ui: &mut egui::Ui, id: egui::Id) -> bool {
-    let Some(rect) = ui.data(|data| data.get_temp::<egui::Rect>(id)) else {
-        return false;
-    };
-    ui.interact(rect, id, egui::Sense::drag()).drag_started()
+pub fn drag_area(ui: &mut egui::Ui, id: egui::Id) -> Option<Grab> {
+    let rect = ui.data(|data| data.get_temp::<egui::Rect>(id))?;
+    if !ui.interact(rect, id, egui::Sense::drag()).drag_started() {
+        return None;
+    }
+    let (pressed, at) = ui.input(|input| (input.pointer.press_origin(), input.time));
+    Some(Grab {
+        offset: pressed.unwrap_or(rect.center()) - rect.min,
+        size: rect.size(),
+        at,
+    })
 }
 
 pub fn drag_area_drawn(ui: &egui::Ui, id: egui::Id, rect: egui::Rect) {
