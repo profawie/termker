@@ -5,6 +5,7 @@ pub mod forwards;
 pub mod hosts;
 pub mod keychain;
 pub mod os;
+pub mod selection;
 pub mod session;
 pub mod settings;
 pub mod sftp;
@@ -285,16 +286,29 @@ pub fn drop_outline(ui: &egui::Ui, theme: &Theme, rect: egui::Rect, over: bool) 
 /// The drag has to be registered before the content so the content ends up
 /// on top of it; where the content was is remembered from the last frame.
 pub fn drag_area(ui: &mut egui::Ui, id: egui::Id) -> Option<Grab> {
+    press_area(ui, id, egui::Sense::drag()).and_then(|(_, grab)| grab)
+}
+
+/// Like [`drag_area`], with `sense` saying what else the area answers to,
+/// such as clicks. Returns the area's response, and how it was picked up
+/// in the frame a drag starts.
+pub fn press_area(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    sense: egui::Sense,
+) -> Option<(egui::Response, Option<Grab>)> {
     let rect = ui.data(|data| data.get_temp::<egui::Rect>(id))?;
-    if !ui.interact(rect, id, egui::Sense::drag()).drag_started() {
-        return None;
+    let response = ui.interact(rect, id, sense);
+    if !response.drag_started() {
+        return Some((response, None));
     }
     let (pressed, at) = ui.input(|input| (input.pointer.press_origin(), input.time));
-    Some(Grab {
+    let grab = Grab {
         offset: pressed.unwrap_or(rect.center()) - rect.min,
         size: rect.size(),
         at,
-    })
+    };
+    Some((response, Some(grab)))
 }
 
 pub fn drag_area_drawn(ui: &egui::Ui, id: egui::Id, rect: egui::Rect) {
