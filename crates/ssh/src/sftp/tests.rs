@@ -404,23 +404,60 @@ async fn create_rename_and_delete_refresh_the_listing() {
     );
 
     // A folder that is not empty is not deleted.
-    fixture.handle.send(Command::Remove {
-        path: "/Docs".into(),
-        is_dir: true,
-    });
-    assert!(fixture.failure().await.starts_with("Could not delete"));
+    fixture
+        .handle
+        .send(Command::Remove(vec![removal("/Docs", true)]));
+    assert!(
+        fixture
+            .failure()
+            .await
+            .starts_with("Could not delete Docs:")
+    );
     assert!(fixture.remote.join("Docs").is_dir());
 
-    fixture.handle.send(Command::Remove {
-        path: "/Docs/renamed.txt".into(),
-        is_dir: false,
-    });
+    fixture
+        .handle
+        .send(Command::Remove(vec![removal("/Docs/renamed.txt", false)]));
     assert!(fixture.listing("/Docs").await.is_empty());
-    fixture.handle.send(Command::Remove {
-        path: "/New".into(),
-        is_dir: true,
-    });
+    fixture
+        .handle
+        .send(Command::Remove(vec![removal("/New", true)]));
     assert!(!fixture.listing("/").await.contains(&"New".to_string()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deletes_several_at_once() {
+    let mut fixture = Fixture::connect("sftp-remove-many").await;
+    fixture.listing("/").await;
+    fs::write(fixture.remote.join("a.txt"), b"a").unwrap();
+    fs::write(fixture.remote.join("b.txt"), b"b").unwrap();
+    fs::create_dir(fixture.remote.join("Full")).unwrap();
+    fs::write(fixture.remote.join("Full/keep.txt"), b"k").unwrap();
+
+    fixture.handle.send(Command::Remove(vec![
+        removal("/a.txt", false),
+        removal("/Full", true),
+        removal("/b.txt", false),
+    ]));
+    // The folder is listed again with what could be deleted gone, then the
+    // one that could not is reported.
+    let listed = fixture.listing("/").await;
+    assert!(!listed.contains(&"a.txt".to_string()));
+    assert!(!listed.contains(&"b.txt".to_string()));
+    assert!(listed.contains(&"Full".to_string()));
+    assert!(
+        fixture
+            .failure()
+            .await
+            .starts_with("Could not delete 1 of 3: Full:")
+    );
+}
+
+fn removal(path: &str, is_dir: bool) -> Removal {
+    Removal {
+        path: path.to_string(),
+        is_dir,
+    }
 }
 
 impl Fixture {
@@ -670,4 +707,24 @@ fn partial_file_sits_next_to_the_target() {
         partial_path(path),
         Path::new("/tmp/downloads/report.pdf.part")
     );
+}
+
+#[test]
+fn removal_errors() {
+    let one = [("a.txt".to_string(), "denied".to_string())];
+    assert_eq!(removal_error(&one, 1), "Could not delete a.txt: denied");
+    assert_eq!(
+        removal_error(&one, 3),
+        "Could not delete 1 of 3: a.txt: denied"
+    );
+    let two = [
+        ("a".to_string(), "x".to_string()),
+        ("b".to_string(), "y".to_string()),
+    ];
+    assert_eq!(
+        removal_error(&two, 2),
+        "Could not delete 2 of 2: a: x; b: y"
+    );
+    assert_eq!(file_name("/home/me/a.txt"), "a.txt");
+    assert_eq!(file_name("/Docs/"), "Docs");
 }

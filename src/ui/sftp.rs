@@ -1,6 +1,8 @@
 //! SFTP page: two file panes side by side. Each pane shows this computer or
-//! one of the hosts. Dragging a file or folder from one pane and dropping it
-//! on the other copies it to the folder open there.
+//! one of the hosts. Dragging files and folders from one pane and dropping
+//! them on the other copies them to the folder open there. Rows can be
+//! selected several at a time, and the pane last clicked answers to the
+//! keyboard.
 
 use std::path::{Path, PathBuf};
 
@@ -9,15 +11,27 @@ use uuid::Uuid;
 
 use crate::{
     app::App,
-    sftp::{self, Command, CopyEvent, CopyHandle, Entry, EntryKind, Event, Place, SftpHandle},
+    sftp::{
+        self, Command, CopyEvent, CopyHandle, Entry, EntryKind, Event, Place, Removal, SftpHandle,
+    },
     ssh::Prompt,
     theme::Theme,
 };
+
+use super::selection::Selection;
 
 const THIS_COMPUTER: &str = "This computer";
 /// Transfers visible without scrolling, and the height of one.
 const TRANSFER_ROWS_SHOWN: usize = 3;
 const TRANSFER_ROW_HEIGHT: f32 = 30.0;
+/// Height of the line under each file list: what is selected, or a hint.
+const FOOTER_HEIGHT: f32 = 30.0;
+/// Rows Page Up and Page Down move.
+const PAGE_ROWS: isize = 10;
+/// Seconds between typed letters that still count as one name to find.
+const FIND_PAUSE: f64 = 1.0;
+/// Names shown in the question before deleting several.
+const DELETE_NAMES_SHOWN: usize = 6;
 
 #[derive(Default)]
 pub struct SftpPage {
@@ -28,14 +42,17 @@ pub struct SftpPage {
     next_id: u64,
     /// A transfer waiting for the user to agree to replace what is there.
     replace: Option<Replace>,
+    /// Pane the keyboard works in: the one last clicked.
+    active: usize,
 }
 
-/// A file or folder being dragged from one pane to the other.
+/// Files and folders being dragged from one pane to the other.
 #[derive(Clone)]
 struct Dragged {
-    /// Pane it comes from.
+    /// Pane they come from.
     from: usize,
-    entry: Entry,
+    /// In list order; the row picked up is one of them.
+    entries: Vec<Entry>,
     grab: super::Grab,
 }
 
@@ -45,9 +62,11 @@ const DRAG_PADDING: egui::Vec2 = egui::vec2(12.0, 6.0);
 const DRAG_WIDTH: f32 = 340.0;
 
 struct Replace {
-    /// Pane the item comes from.
+    /// Pane the items come from.
     from: usize,
-    entry: Entry,
+    entries: Vec<Entry>,
+    /// Names among them that the other pane already has.
+    taken: Vec<String>,
 }
 
 enum State {
@@ -109,7 +128,7 @@ struct TransferRow {
 enum Dialog {
     NewFolder(String),
     Rename { from: String, name: String },
-    Delete(Entry),
+    Delete(Vec<Entry>),
 }
 
 #[derive(Default)]
@@ -124,6 +143,15 @@ struct Pane {
     loading: bool,
     error: Option<String>,
     dialog: Option<Dialog>,
+    selection: Selection,
+    /// Name to select once the next listing arrives: the folder just left
+    /// by going up.
+    reveal: Option<String>,
+    /// Bring the keyboard's row into view on the next frame.
+    scroll_to_cursor: bool,
+    /// Letters typed to jump to a name, and when the last one came.
+    find: String,
+    find_at: f64,
 }
 
 /// What can be shown in a pane.
@@ -137,7 +165,17 @@ enum Choice {
 enum PaneAction {
     Show(Choice),
     Close,
-    Transfer(Entry),
+    Transfer(Vec<Entry>),
+}
+
+/// Names of `entries`, in list order.
+fn names(entries: &[Entry]) -> Vec<&str> {
+    entries.iter().map(|entry| entry.name.as_str()).collect()
+}
+
+/// Whether a row can be copied: drives and special files cannot.
+fn copyable(entry: &Entry) -> bool {
+    entry.kind != EntryKind::Other
 }
 
 impl Pane {
@@ -189,6 +227,66 @@ impl Pane {
             // Above a drive is the list of drives.
             _ if cfg!(windows) && !self.path.is_empty() => Some(String::new()),
             _ => None,
+        }
+    }
+
+    /// Name of the folder shown, as it is listed in the folder above.
+    fn name_in_parent(&self) -> Option<String> {
+        if self.path.is_empty() {
+            return None;
+        }
+        if !self.is_local() {
+            let trimmed = self.path.trim_end_matches('/');
+            return trimmed.rsplit('/').next().map(str::to_string);
+        }
+        match Path::new(&self.path).file_name() {
+            Some(name) => Some(name.to_string_lossy().into_owned()),
+            // A drive is listed by its full path.
+            None => Some(self.path.clone()),
+        }
+    }
+
+    /// Open the folder above, with the one just left selected.
+    fn go_up(&mut self) {
+        if let Some(up) = self.parent() {
+            self.reveal = self.name_in_parent();
+            self.open(up);
+        }
+    }
+
+    /// The selected rows, in list order.
+    fn selected(&self) -> Vec<Entry> {
+        self.entries
+            .iter()
+            .filter(|entry| self.selection.is_selected(&entry.name))
+            .cloned()
+            .collect()
+    }
+
+    /// The row the keyboard is on.
+    fn cursor_entry(&self) -> Option<&Entry> {
+        let cursor = self.selection.cursor()?;
+        self.entries.iter().find(|entry| entry.name == cursor)
+    }
+
+    /// Show a listing of `path`. The selection is kept when it is the same
+    /// folder read again.
+    fn loaded(&mut self, path: String, entries: Vec<Entry>) {
+        let same = path == self.path;
+        self.entries = entries;
+        self.path_input = path.clone();
+        self.path = path;
+        self.error = None;
+        if same {
+            self.selection.retain(&names(&self.entries));
+        } else {
+            self.selection.clear();
+        }
+        if let Some(name) = self.reveal.take()
+            && self.entries.iter().any(|entry| entry.name == name)
+        {
+            self.selection.select_only(&name);
+            self.scroll_to_cursor = true;
         }
     }
 
@@ -250,13 +348,9 @@ impl Pane {
             sftp::local::list(Path::new(&path))
         };
         match listed {
-            Ok(entries) => {
-                self.entries = entries;
-                self.path_input = path.clone();
-                self.path = path;
-                self.error = None;
-            }
+            Ok(entries) => self.loaded(path, entries),
             Err(err) => {
+                self.reveal = None;
                 self.path_input = self.path.clone();
                 self.error = Some(format!("Could not open {path}: {err}"));
             }
@@ -264,10 +358,14 @@ impl Pane {
     }
 
     fn poll(&mut self) {
-        let Source::Remote(remote) = &mut self.source else {
+        let Source::Remote(remote) = &self.source else {
             return;
         };
-        while let Ok(event) = remote.handle.events.try_recv() {
+        let events: Vec<Event> = remote.handle.events.try_iter().collect();
+        for event in events {
+            let Source::Remote(remote) = &mut self.source else {
+                return;
+            };
             match event {
                 Event::Status(text) => {
                     if matches!(remote.state, State::Connecting(_)) {
@@ -289,15 +387,13 @@ impl Pane {
                     // A listing for a folder the user already left is
                     // ignored.
                     if self.loading || path == self.path {
-                        self.path = path.clone();
-                        self.path_input = path;
-                        self.entries = entries;
                         self.loading = false;
-                        self.error = None;
+                        self.loaded(path, entries);
                     }
                 }
                 Event::Failed(text) => {
                     self.loading = false;
+                    self.reveal = None;
                     self.path_input = self.path.clone();
                     self.error = Some(text);
                 }
@@ -341,20 +437,35 @@ impl Pane {
         }
     }
 
-    fn delete(&mut self, entry: &Entry) {
-        let path = self.child(&entry.name);
-        let is_dir = entry.kind == EntryKind::Dir;
+    /// Delete `entries` from the folder shown. Folders go only when empty.
+    fn delete(&mut self, entries: &[Entry]) {
+        let items: Vec<Removal> = entries
+            .iter()
+            .map(|entry| Removal {
+                path: self.child(&entry.name),
+                is_dir: entry.kind == EntryKind::Dir,
+            })
+            .collect();
         match &self.source {
             Source::None => {}
             Source::Local => {
-                let result = if is_dir {
-                    std::fs::remove_dir(&path)
-                } else {
-                    std::fs::remove_file(&path)
-                };
-                self.after_local("Could not delete", result);
+                let mut failures = Vec::new();
+                for (entry, item) in entries.iter().zip(&items) {
+                    let result = if item.is_dir {
+                        std::fs::remove_dir(&item.path)
+                    } else {
+                        std::fs::remove_file(&item.path)
+                    };
+                    if let Err(err) = result {
+                        failures.push((entry.name.clone(), err.to_string()));
+                    }
+                }
+                self.refresh();
+                if !failures.is_empty() {
+                    self.error = Some(sftp::removal_error(&failures, items.len()));
+                }
             }
-            Source::Remote(remote) => remote.handle.send(Command::Remove { path, is_dir }),
+            Source::Remote(remote) => remote.handle.send(Command::Remove(items)),
         }
     }
 
@@ -413,10 +524,14 @@ impl SftpPage {
             ui,
             &theme,
             "SFTP",
-            "Drag a file or folder from one pane and drop it on the other to copy it: computer to host, host to computer, or host to host.",
+            &format!(
+                "Drag files or folders from one pane to the other to copy them, including host to host. {} or Shift+click selects several, and the keyboard works in the pane last clicked.",
+                command_key()
+            ),
         );
 
         self.replace_card(app, ui);
+        let key_action = self.keyboard(app, ui.ctx());
 
         let mut actions: [Option<PaneAction>; 2] = [None, None];
         let mut rects = [egui::Rect::NOTHING; 2];
@@ -434,8 +549,10 @@ impl SftpPage {
         ui.allocate_ui(size, |ui| {
             ui.columns(2, |columns| {
                 for (index, column) in columns.iter_mut().enumerate() {
+                    let active = self.active == index;
                     column.push_id(index, |ui| {
-                        let (action, rect) = pane_ui(ui, app, &mut self.panes[index], index);
+                        let (action, rect) =
+                            pane_ui(ui, app, &mut self.panes[index], index, active);
                         actions[index] = action;
                         rects[index] = rect;
                     });
@@ -443,6 +560,23 @@ impl SftpPage {
             });
         });
         transfers_list(ui, &theme, &mut self.transfers);
+
+        // The keyboard follows the pane last clicked.
+        let pressed = ui.input(|input| {
+            input
+                .pointer
+                .any_pressed()
+                .then(|| input.pointer.interact_pos())
+                .flatten()
+        });
+        if let Some(index) =
+            pressed.and_then(|pointer| rects.iter().position(|rect| rect.contains(pointer)))
+        {
+            self.active = index;
+        }
+        if actions[self.active].is_none() {
+            actions[self.active] = key_action;
+        }
 
         // A row dragged out of one pane is copied where it is dropped on
         // the other.
@@ -453,10 +587,14 @@ impl SftpPage {
                 .ctx()
                 .pointer_latest_pos()
                 .is_some_and(|pointer| rects[to].contains(pointer));
+            let what = match dragged.entries.len() {
+                1 => String::new(),
+                count => format!("{count} items "),
+            };
             let hint = match blocked {
                 Some(reason) => reason.to_string(),
                 None => format!(
-                    "Drop to copy to {} on {}",
+                    "Drop to copy {what}to {} on {}",
                     self.panes[to].path,
                     self.panes[to].title()
                 ),
@@ -471,26 +609,37 @@ impl SftpPage {
                 "Drop on the other pane to copy"
             };
             let ok = over && blocked.is_none();
-            let entry = &dragged.entry;
+            let entries = &dragged.entries;
             let grab = dragged.grab.framed(DRAG_PADDING, DRAG_WIDTH);
             super::drag_float(ui.ctx(), &theme, grab, DRAG_PADDING, hint, ok, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if entry.kind != EntryKind::Dir {
-                            fixed(ui, 62.0, &sftp::format_size(entry.size), &theme);
+                        let bytes: u64 = entries
+                            .iter()
+                            .filter(|entry| entry.kind != EntryKind::Dir)
+                            .map(|entry| entry.size)
+                            .sum();
+                        if entries.iter().any(|entry| entry.kind != EntryKind::Dir) {
+                            fixed(ui, 62.0, &sftp::format_size(bytes), &theme);
                         }
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            icon(ui, &theme, entry.kind);
-                            ui.add(
-                                egui::Label::new(RichText::new(&entry.name).strong()).truncate(),
-                            );
+                            let (kind, name) = match entries.as_slice() {
+                                [entry] => (entry.kind, entry.name.clone()),
+                                _ => (EntryKind::File, format!("{} items", entries.len())),
+                            };
+                            if entries.len() > 1 {
+                                stack_icon(ui, &theme);
+                            } else {
+                                icon(ui, &theme, kind);
+                            }
+                            ui.add(egui::Label::new(RichText::new(name).strong()).truncate());
                         });
                     });
                 });
             });
             if over && blocked.is_none() && ui.input(|input| input.pointer.any_released()) {
-                actions[dragged.from] = Some(PaneAction::Transfer(dragged.entry.clone()));
+                actions[dragged.from] = Some(PaneAction::Transfer(dragged.entries.clone()));
             }
         }
 
@@ -501,15 +650,23 @@ impl SftpPage {
                     self.connect(app, ui.ctx(), index, host_id);
                 }
                 Some(PaneAction::Close) => self.panes[index] = Pane::default(),
-                Some(PaneAction::Transfer(entry)) => {
-                    let taken = self.panes[1 - index]
-                        .entries
+                Some(PaneAction::Transfer(entries)) => {
+                    let there = names(&self.panes[1 - index].entries);
+                    let taken: Vec<String> = entries
                         .iter()
-                        .any(|existing| existing.name == entry.name);
-                    if taken {
-                        self.replace = Some(Replace { from: index, entry });
+                        .filter(|entry| there.contains(&entry.name.as_str()))
+                        .map(|entry| entry.name.clone())
+                        .collect();
+                    if taken.is_empty() {
+                        for entry in &entries {
+                            self.transfer(app, ui.ctx(), index, entry);
+                        }
                     } else {
-                        self.transfer(app, ui.ctx(), index, &entry);
+                        self.replace = Some(Replace {
+                            from: index,
+                            entries,
+                            taken,
+                        });
                     }
                 }
                 None => {}
@@ -583,6 +740,196 @@ impl SftpPage {
         });
     }
 
+    /// Keys for the active pane. Returns what the page has to carry out.
+    fn keyboard(&mut self, app: &mut App, ctx: &egui::Context) -> Option<PaneAction> {
+        use egui::Key;
+        // Typing in a box or a menu comes first.
+        if ctx.text_edit_focused() || egui::Popup::is_any_open(ctx) {
+            return None;
+        }
+        // While asking about replacing, Escape cancels.
+        if self.replace.is_some() {
+            if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Escape)) {
+                self.replace = None;
+            }
+            return None;
+        }
+        const KEYS: [Key; 17] = [
+            Key::ArrowUp,
+            Key::ArrowDown,
+            Key::ArrowLeft,
+            Key::ArrowRight,
+            Key::PageUp,
+            Key::PageDown,
+            Key::Home,
+            Key::End,
+            Key::Enter,
+            Key::Escape,
+            Key::Backspace,
+            Key::Delete,
+            Key::A,
+            Key::R,
+            Key::N,
+            Key::F2,
+            Key::F5,
+        ];
+        let (keys, typed, now) = ctx.input_mut(|input| {
+            let command = input.modifiers.command;
+            let mut keys = Vec::new();
+            let mut typed = String::new();
+            input.events.retain(|event| match event {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if KEYS.contains(key) => {
+                    keys.push((*key, *modifiers));
+                    false
+                }
+                egui::Event::Text(text) if !command => {
+                    typed.push_str(text);
+                    false
+                }
+                _ => true,
+            });
+            (keys, typed, input.time)
+        });
+
+        let mut action = None;
+        for (key, modifiers) in keys {
+            let pane = &mut self.panes[self.active];
+            // A question about deleting: Enter deletes, Escape keeps.
+            if let Some(dialog) = &pane.dialog {
+                if let (Dialog::Delete(entries), Key::Enter) = (dialog, key) {
+                    let entries = entries.clone();
+                    pane.dialog = None;
+                    pane.delete(&entries);
+                } else if key == Key::Escape {
+                    pane.dialog = None;
+                }
+                continue;
+            }
+            // A list is shown: a folder, or this computer's drives.
+            let ready = pane.location().is_some() || (pane.is_local() && pane.path.is_empty());
+            if !ready || pane.loading {
+                if let (Key::ArrowLeft | Key::ArrowRight, false) = (key, modifiers.any()) {
+                    self.active = usize::from(key == Key::ArrowRight);
+                }
+                continue;
+            }
+            let drives = pane.path.is_empty();
+            let shift = modifiers.shift;
+            let names = names(&pane.entries);
+            let mut moved = true;
+            match key {
+                Key::ArrowUp if modifiers.alt || modifiers.command => {
+                    moved = false;
+                    pane.go_up();
+                }
+                Key::ArrowUp => pane.selection.step(&names, -1, shift),
+                Key::ArrowDown => pane.selection.step(&names, 1, shift),
+                Key::PageUp => pane.selection.step(&names, -PAGE_ROWS, shift),
+                Key::PageDown => pane.selection.step(&names, PAGE_ROWS, shift),
+                Key::Home => pane.selection.jump(&names, 0, shift),
+                Key::End => pane
+                    .selection
+                    .jump(&names, names.len().saturating_sub(1), shift),
+                Key::ArrowLeft | Key::ArrowRight if !modifiers.any() => {
+                    moved = false;
+                    self.active = usize::from(key == Key::ArrowRight);
+                }
+                Key::A if modifiers.command => {
+                    moved = false;
+                    pane.selection.select_all(&names);
+                }
+                Key::Escape => {
+                    moved = false;
+                    pane.selection.clear();
+                }
+                Key::Enter => {
+                    moved = false;
+                    let target = pane
+                        .cursor_entry()
+                        .filter(|entry| matches!(entry.kind, EntryKind::Dir | EntryKind::Symlink))
+                        .map(|entry| pane.child(&entry.name));
+                    if let Some(path) = target {
+                        pane.open(path);
+                    }
+                }
+                Key::Delete | Key::Backspace
+                    if !drives && (key == Key::Delete || modifiers.command) =>
+                {
+                    moved = false;
+                    let selected = pane.selected();
+                    if !selected.is_empty() {
+                        pane.dialog = Some(Dialog::Delete(selected));
+                    }
+                }
+                Key::Backspace => {
+                    moved = false;
+                    pane.go_up();
+                }
+                Key::F2 if !drives => {
+                    moved = false;
+                    let only = pane.selected();
+                    if let [entry] = only.as_slice() {
+                        pane.dialog = Some(Dialog::Rename {
+                            from: entry.name.clone(),
+                            name: entry.name.clone(),
+                        });
+                    }
+                }
+                Key::N if !drives && modifiers.command && shift => {
+                    moved = false;
+                    pane.dialog = Some(Dialog::NewFolder(String::new()));
+                }
+                Key::R if modifiers.command => {
+                    moved = false;
+                    pane.open(pane.path.clone());
+                }
+                Key::F5 if !drives => {
+                    moved = false;
+                    let selected: Vec<Entry> =
+                        pane.selected().into_iter().filter(copyable).collect();
+                    if !selected.is_empty() {
+                        match self.blocked(self.active) {
+                            Some(reason) => app.notify(reason.to_string()),
+                            None => action = Some(PaneAction::Transfer(selected)),
+                        }
+                    }
+                }
+                _ => moved = false,
+            }
+            if moved {
+                self.panes[self.active].scroll_to_cursor = true;
+            }
+        }
+
+        // Typing a name's first letters goes to it.
+        let typed: String = typed.chars().filter(|c| !c.is_control()).collect();
+        let pane = &mut self.panes[self.active];
+        if !typed.is_empty() && pane.dialog.is_none() && !pane.loading {
+            if now - pane.find_at > FIND_PAUSE {
+                pane.find.clear();
+            }
+            pane.find_at = now;
+            // A space on its own is not the start of a name.
+            if !(pane.find.is_empty() && typed.trim().is_empty()) {
+                pane.find.push_str(&typed.to_lowercase());
+                let names = names(&pane.entries);
+                if let Some(index) = names
+                    .iter()
+                    .position(|name| name.to_lowercase().starts_with(&pane.find))
+                {
+                    pane.selection.jump(&names, index, false);
+                    pane.scroll_to_cursor = true;
+                }
+            }
+        }
+        action
+    }
+
     /// Asks before a transfer replaces something with the same name.
     fn replace_card(&mut self, app: &App, ui: &mut egui::Ui) {
         let Some(replace) = self.replace.take() else {
@@ -594,22 +941,53 @@ impl SftpPage {
         if destination.location().is_none() {
             return;
         }
+        enum Answer {
+            Replace,
+            Skip,
+            Cancel,
+        }
         let mut answer = None;
+        let taken_dirs = replace
+            .entries
+            .iter()
+            .filter(|entry| replace.taken.contains(&entry.name))
+            .map(|entry| entry.kind == EntryKind::Dir);
+        let (mut dirs, mut files) = (false, false);
+        for is_dir in taken_dirs {
+            dirs |= is_dir;
+            files |= !is_dir;
+        }
+        let all_taken = replace.taken.len() == replace.entries.len();
         super::card(&theme).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            let name = &replace.entry.name;
-            ui.label(
-                RichText::new(format!(
-                    "{name} already exists in {} on {}",
-                    destination.path,
-                    destination.title()
-                ))
-                .strong(),
-            );
-            let note = if replace.entry.kind == EntryKind::Dir {
-                "The folders are merged: files with the same name are replaced, everything else is kept."
+            let names = match replace.taken.as_slice() {
+                [name] => name.clone(),
+                taken => format!("{} of these ({})", taken.len(), list_names(taken)),
+            };
+            let verb = if replace.taken.len() == 1 {
+                "exists"
             } else {
-                "The file there is replaced by this one."
+                "exist"
+            };
+            ui.add(
+                egui::Label::new(
+                    RichText::new(format!(
+                        "{names} already {verb} in {} on {}",
+                        destination.path,
+                        destination.title()
+                    ))
+                    .strong(),
+                )
+                .wrap(),
+            );
+            let note = match (dirs, files) {
+                (true, false) => {
+                    "The folders are merged: files with the same name are replaced, everything else is kept."
+                }
+                (false, _) => "The files there are replaced by these.",
+                (true, true) => {
+                    "Files there are replaced; folders are merged, keeping what is not copied over."
+                }
             };
             ui.add(egui::Label::new(RichText::new(note).color(theme.text_dim)).wrap());
             ui.horizontal(|ui| {
@@ -617,17 +995,31 @@ impl SftpPage {
                     .button(RichText::new("Replace").color(theme.danger))
                     .clicked()
                 {
-                    answer = Some(true);
+                    answer = Some(Answer::Replace);
+                }
+                if !all_taken && ui.button("Skip those").clicked() {
+                    answer = Some(Answer::Skip);
                 }
                 if ui.add(super::primary_button(&theme, "Cancel")).clicked() {
-                    answer = Some(false);
+                    answer = Some(Answer::Cancel);
                 }
             });
         });
         ui.add_space(8.0);
         match answer {
-            Some(true) => self.transfer(app, ui.ctx(), replace.from, &replace.entry),
-            Some(false) => {}
+            Some(Answer::Replace) => {
+                for entry in &replace.entries {
+                    self.transfer(app, ui.ctx(), replace.from, entry);
+                }
+            }
+            Some(Answer::Skip) => {
+                for entry in &replace.entries {
+                    if !replace.taken.contains(&entry.name) {
+                        self.transfer(app, ui.ctx(), replace.from, entry);
+                    }
+                }
+            }
+            Some(Answer::Cancel) => {}
             None => self.replace = Some(replace),
         }
     }
@@ -665,6 +1057,7 @@ fn pane_ui(
     app: &App,
     pane: &mut Pane,
     index: usize,
+    active: bool,
 ) -> (Option<PaneAction>, egui::Rect) {
     let theme = app.theme;
     let mut action = None;
@@ -762,7 +1155,7 @@ fn pane_ui(
         if let Some(error) = &pane.error {
             ui.add(egui::Label::new(RichText::new(error).color(theme.danger)).wrap());
         }
-        file_list(ui, &theme, pane, index);
+        file_list(ui, &theme, pane, index, active);
     });
     (action, card.response.rect)
 }
@@ -798,15 +1191,18 @@ fn chooser(ui: &mut egui::Ui, app: &App) -> Option<Choice> {
 
 fn toolbar(ui: &mut egui::Ui, pane: &mut Pane) {
     ui.horizontal(|ui| {
-        let up = pane.parent();
         if ui
-            .add_enabled(up.is_some(), egui::Button::new("Up"))
+            .add_enabled(pane.parent().is_some(), egui::Button::new("Up"))
+            .on_hover_text("Backspace")
             .clicked()
-            && let Some(up) = up
         {
-            pane.open(up);
+            pane.go_up();
         }
-        if ui.button("Refresh").clicked() {
+        if ui
+            .button("Refresh")
+            .on_hover_text(format!("{}+R", command_key()))
+            .clicked()
+        {
             pane.open(pane.path.clone());
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -868,40 +1264,47 @@ fn dialog(ui: &mut egui::Ui, theme: &Theme, pane: &mut Pane) {
                     None => {}
                 }
             }
-            Dialog::Delete(entry) => {
-                let what = if entry.kind == EntryKind::Dir {
-                    "folder"
-                } else {
-                    "file"
+            Dialog::Delete(entries) => {
+                let folders = entries
+                    .iter()
+                    .filter(|entry| entry.kind == EntryKind::Dir)
+                    .count();
+                let (question, it) = match entries.as_slice() {
+                    [entry] => {
+                        let what = if folders == 1 { "folder" } else { "file" };
+                        (format!("Delete the {what} {}?", entry.name), "it")
+                    }
+                    _ => (format!("Delete {} items?", entries.len()), "them"),
                 };
                 ui.add(
-                    egui::Label::new(
-                        RichText::new(format!("Delete the {what} {}?", entry.name))
-                            .strong()
-                            .color(theme.danger),
-                    )
-                    .wrap(),
+                    egui::Label::new(RichText::new(question).strong().color(theme.danger)).wrap(),
                 );
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(format!(
-                            "This removes it from {place} and cannot be undone."
-                        ))
-                        .color(theme.text_dim),
-                    )
-                    .wrap(),
-                );
+                if entries.len() > 1 {
+                    let listed: Vec<String> =
+                        entries.iter().map(|entry| entry.name.clone()).collect();
+                    ui.add(egui::Label::new(list_names(&listed)).wrap());
+                }
+                let mut note = format!("This removes {it} from {place} and cannot be undone.");
+                if folders > 0 {
+                    note.push_str(" Folders are only deleted when they are empty.");
+                }
+                ui.add(egui::Label::new(RichText::new(note).color(theme.text_dim)).wrap());
                 ui.horizontal(|ui| {
                     if ui
                         .button(RichText::new("Delete").color(theme.danger))
                         .clicked()
                     {
-                        pane.delete(entry);
+                        pane.delete(entries);
                         close = true;
                     }
                     if ui.add(super::primary_button(theme, "Keep")).clicked() {
                         close = true;
                     }
+                    ui.label(
+                        RichText::new("Enter deletes, Esc keeps")
+                            .small()
+                            .color(theme.text_dim),
+                    );
                 });
             }
         }
@@ -944,8 +1347,10 @@ fn name_form(ui: &mut egui::Ui, theme: &Theme, name: &mut String, confirm: &str)
     result
 }
 
-/// The files in a pane. Rows can be dragged to the other pane.
-fn file_list(ui: &mut egui::Ui, theme: &Theme, pane: &mut Pane, index: usize) {
+/// The files in a pane. Rows can be selected with the mouse and keyboard,
+/// and dragged to the other pane; dragging a selected row takes the whole
+/// selection along.
+fn file_list(ui: &mut egui::Ui, theme: &Theme, pane: &mut Pane, index: usize, active: bool) {
     if pane.loading {
         ui.label(RichText::new("Loading...").color(theme.text_dim));
         return;
@@ -966,42 +1371,97 @@ fn file_list(ui: &mut egui::Ui, theme: &Theme, pane: &mut Pane, index: usize) {
     enum Action {
         Open(String),
         Rename(String),
-        Delete(Entry),
+        Delete(Vec<Entry>),
+    }
+    /// How a click changes the selection.
+    enum Pick {
+        Only(String),
+        Toggle(String),
+        Range { to: String, keep: bool },
     }
     let mut action = None;
+    let mut pick = None;
 
     // The date only fits in a wide pane; it is always in the tooltip.
     let show_modified = ui.available_width() > 520.0;
     let drives = pane.path.is_empty();
+    let modifiers = ui.input(|input| input.modifiers);
+    let click_pick = |name: &str| {
+        if modifiers.shift {
+            Pick::Range {
+                to: name.to_string(),
+                keep: modifiers.command,
+            }
+        } else if modifiers.command {
+            Pick::Toggle(name.to_string())
+        } else {
+            Pick::Only(name.to_string())
+        }
+    };
+    let scroll_to = std::mem::take(&mut pane.scroll_to_cursor);
+    let cursor = pane.selection.cursor().map(str::to_string);
 
     egui::ScrollArea::vertical()
         .auto_shrink(false)
+        .max_height((ui.available_height() - FOOTER_HEIGHT).max(60.0))
         .show(ui, |ui| {
             // Dragging over a name moves the row instead of selecting text.
             ui.style_mut().interaction.selectable_labels = false;
             let lifted = egui::DragAndDrop::payload::<Dragged>(ui.ctx());
             for entry in &pane.entries {
                 let is_dir = entry.kind == EntryKind::Dir;
+                let opens = is_dir || entry.kind == EntryKind::Symlink;
+                let selected = pane.selection.is_selected(&entry.name);
                 let modified = entry.modified.map(sftp::format_time).unwrap_or_default();
-                // The whole row can be picked up and dropped on the other
-                // pane. Drives and special files cannot be copied.
-                let draggable = !drives && entry.kind != EntryKind::Other;
-                let drag_id = ui.scope_id().with(("drag", &entry.name));
-                if let Some(grab) = super::drag_area(ui, drag_id).filter(|_| draggable) {
-                    egui::DragAndDrop::set_payload(
-                        ui.ctx(),
-                        Dragged {
-                            from: index,
-                            entry: entry.clone(),
-                            grab,
-                        },
-                    );
+                // The whole row can be clicked to select it, and picked up
+                // and dropped on the other pane. Drives and special files
+                // cannot be copied.
+                let draggable = !drives && copyable(entry);
+                let row_id = ui.scope_id().with(("drag", &entry.name));
+                let sense = if draggable {
+                    egui::Sense::click_and_drag()
+                } else {
+                    egui::Sense::click()
+                };
+                let mut hovered = false;
+                if let Some((response, grab)) = super::press_area(ui, row_id, sense) {
+                    hovered = response.hovered();
+                    if response.double_clicked() && opens {
+                        action = Some(Action::Open(entry.name.clone()));
+                    } else if response.clicked() {
+                        pick = Some(click_pick(&entry.name));
+                    }
+                    if let Some(grab) = grab.filter(|_| draggable) {
+                        // A selected row brings the rest of the selection.
+                        let entries = if selected {
+                            pane.entries
+                                .iter()
+                                .filter(|other| {
+                                    copyable(other) && pane.selection.is_selected(&other.name)
+                                })
+                                .cloned()
+                                .collect()
+                        } else {
+                            pick = Some(Pick::Only(entry.name.clone()));
+                            vec![entry.clone()]
+                        };
+                        egui::DragAndDrop::set_payload(
+                            ui.ctx(),
+                            Dragged {
+                                from: index,
+                                entries,
+                                grab,
+                            },
+                        );
+                    }
                 }
-                // While the row is carried around, only a faint copy stays
-                // behind.
+                // While the rows are carried around, only a faint copy
+                // stays behind.
                 let lifted = lifted.as_ref().is_some_and(|dragged| {
-                    dragged.from == index && dragged.entry.name == entry.name
+                    dragged.from == index
+                        && dragged.entries.iter().any(|other| other.name == entry.name)
                 });
+                let background = ui.painter().add(egui::Shape::Noop);
                 let row = ui.horizontal(|ui| {
                     if lifted {
                         ui.set_opacity(super::DRAGGED_OPACITY);
@@ -1014,7 +1474,7 @@ fn file_list(ui: &mut egui::Ui, theme: &Theme, pane: &mut Pane, index: usize) {
                             if super::icon_button(ui, theme, super::RowIcon::Delete, "Delete")
                                 .clicked()
                             {
-                                action = Some(Action::Delete(entry.clone()));
+                                action = Some(Action::Delete(vec![entry.clone()]));
                             }
                             if super::icon_button(ui, theme, super::RowIcon::Rename, "Rename")
                                 .clicked()
@@ -1034,6 +1494,7 @@ fn file_list(ui: &mut egui::Ui, theme: &Theme, pane: &mut Pane, index: usize) {
                         fixed(ui, 62.0, &size, theme);
 
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.add_space(4.0);
                             icon(ui, theme, entry.kind);
                             let mut details = entry.name.clone();
                             if !modified.is_empty() {
@@ -1045,7 +1506,9 @@ fn file_list(ui: &mut egui::Ui, theme: &Theme, pane: &mut Pane, index: usize) {
                                     sftp::format_permissions(mode)
                                 ));
                             }
-                            if is_dir || entry.kind == EntryKind::Symlink {
+                            if opens {
+                                // The name opens the folder, unless Ctrl or
+                                // Shift is held to select it.
                                 let link = egui::Label::new(RichText::new(&entry.name).strong())
                                     .truncate()
                                     .sense(egui::Sense::click());
@@ -1055,7 +1518,11 @@ fn file_list(ui: &mut egui::Ui, theme: &Theme, pane: &mut Pane, index: usize) {
                                     .on_hover_text(details)
                                     .clicked()
                                 {
-                                    action = Some(Action::Open(entry.name.clone()));
+                                    if modifiers.command || modifiers.shift {
+                                        pick = Some(click_pick(&entry.name));
+                                    } else {
+                                        action = Some(Action::Open(entry.name.clone()));
+                                    }
                                 }
                             } else {
                                 ui.add(egui::Label::new(&entry.name).truncate())
@@ -1064,11 +1531,45 @@ fn file_list(ui: &mut egui::Ui, theme: &Theme, pane: &mut Pane, index: usize) {
                         });
                     });
                 });
-                if draggable {
-                    super::drag_area_drawn(ui, drag_id, row.response.rect);
+                let rect = row.response.rect.expand2(egui::vec2(0.0, 1.0));
+                let fill = if selected {
+                    Some(theme.accent.gamma_multiply(0.30))
+                } else if hovered {
+                    Some(theme.text_dim.gamma_multiply(0.10))
+                } else {
+                    None
+                };
+                if let Some(fill) = fill {
+                    ui.painter()
+                        .set(background, egui::Shape::rect_filled(rect, 4.0, fill));
                 }
+                let at_cursor = cursor.as_deref() == Some(entry.name.as_str());
+                if at_cursor && active {
+                    ui.painter().rect_stroke(
+                        rect,
+                        4.0,
+                        egui::Stroke::new(1.0, theme.accent_text.gamma_multiply(0.8)),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+                if at_cursor && scroll_to {
+                    ui.scroll_to_rect(rect, None);
+                }
+                super::drag_area_drawn(ui, row_id, row.response.rect);
             }
         });
+
+    match pick {
+        Some(Pick::Only(name)) => pane.selection.select_only(&name),
+        Some(Pick::Toggle(name)) => pane.selection.toggle(&name),
+        Some(Pick::Range { to, keep }) => {
+            pane.selection.extend_to(&names(&pane.entries), &to, keep);
+        }
+        None => {}
+    }
+    if footer(ui, theme, pane, drives) {
+        action = Some(Action::Delete(pane.selected()));
+    }
 
     match action {
         Some(Action::Open(name)) => pane.open(pane.child(&name)),
@@ -1078,9 +1579,126 @@ fn file_list(ui: &mut egui::Ui, theme: &Theme, pane: &mut Pane, index: usize) {
                 name,
             });
         }
-        Some(Action::Delete(entry)) => pane.dialog = Some(Dialog::Delete(entry)),
+        Some(Action::Delete(entries)) => pane.dialog = Some(Dialog::Delete(entries)),
         None => {}
     }
+}
+
+/// "Cmd" on a Mac, "Ctrl" elsewhere.
+fn command_key() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Cmd"
+    } else {
+        "Ctrl"
+    }
+}
+
+/// Every key the file list answers to.
+fn shortcuts() -> String {
+    let cmd = command_key();
+    [
+        "Click: select one".to_string(),
+        format!("{cmd}+click: add or remove one"),
+        "Shift+click: select everything between".to_string(),
+        format!("{cmd}+A: select all, Esc: select none"),
+        "Up, Down, Page Up, Page Down, Home, End: move (with Shift: select)".to_string(),
+        "Type a name: go to it".to_string(),
+        "Enter or double click: open a folder".to_string(),
+        "Backspace: folder above".to_string(),
+        format!("Delete or {cmd}+Backspace: delete what is selected"),
+        "F2: rename".to_string(),
+        "F5: copy what is selected to the other pane".to_string(),
+        format!("{cmd}+Shift+N: new folder, {cmd}+R: refresh"),
+        "Left, Right: work in the left or right pane".to_string(),
+    ]
+    .join("\n")
+}
+
+/// The line under a file list: what is selected, or how to select. Returns
+/// true when Delete was clicked.
+fn footer(ui: &mut egui::Ui, theme: &Theme, pane: &mut Pane, drives: bool) -> bool {
+    let mut delete = false;
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), FOOTER_HEIGHT),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_height(FOOTER_HEIGHT);
+            if pane.selection.is_empty() {
+                let cmd = command_key();
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!(
+                            "Click to select, {cmd} or Shift+click for more. Hover for keys."
+                        ))
+                        .small()
+                        .color(theme.text_dim),
+                    )
+                    .truncate(),
+                )
+                .on_hover_text(shortcuts());
+                return;
+            }
+            let selected = pane.selected();
+            let mut text = format!("{} selected", selected.len());
+            let bytes: u64 = selected
+                .iter()
+                .filter(|entry| entry.kind != EntryKind::Dir)
+                .map(|entry| entry.size)
+                .sum();
+            if selected.iter().any(|entry| entry.kind != EntryKind::Dir) {
+                text.push_str(&format!(", {}", sftp::format_size(bytes)));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(10.0);
+                if !drives
+                    && super::icon_button(ui, theme, super::RowIcon::Delete, "Delete selected")
+                        .clicked()
+                {
+                    delete = true;
+                }
+                if ui.small_button("Clear").on_hover_text("Esc").clicked() {
+                    pane.selection.clear();
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(egui::Label::new(RichText::new(text).strong()).truncate())
+                        .on_hover_text(shortcuts());
+                });
+            });
+        },
+    );
+    delete
+}
+
+/// `names` joined by commas, cut short after a few.
+fn list_names(names: &[String]) -> String {
+    let mut text = names
+        .iter()
+        .take(DELETE_NAMES_SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if names.len() > DELETE_NAMES_SHOWN {
+        text.push_str(&format!(" and {} more", names.len() - DELETE_NAMES_SHOWN));
+    }
+    text
+}
+
+/// Two sheets of paper, one behind the other: several items.
+fn stack_icon(ui: &mut egui::Ui, theme: &Theme) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+    let painter = ui.painter();
+    let c = rect.center();
+    let stroke = egui::Stroke::new(1.2, theme.text_dim);
+    let back = egui::Rect::from_min_max(c + egui::vec2(-3.5, -8.0), c + egui::vec2(7.0, 5.0));
+    let front = egui::Rect::from_min_max(c + egui::vec2(-7.0, -4.5), c + egui::vec2(3.5, 8.0));
+    painter.rect_stroke(back, 1.5, stroke, egui::StrokeKind::Middle);
+    painter.rect_filled(front, 1.5, theme.surface);
+    painter.rect_stroke(
+        front,
+        1.5,
+        egui::Stroke::new(1.2, theme.accent_text),
+        egui::StrokeKind::Middle,
+    );
 }
 
 /// Small picture for a folder, a file or a link.

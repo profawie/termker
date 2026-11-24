@@ -109,11 +109,48 @@ pub fn format_permissions(mode: u32) -> String {
 
 pub use termker_core::time::format_time;
 
+/// A file or folder to delete. Folders are only deleted when empty.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Removal {
+    pub path: String,
+    pub is_dir: bool,
+}
+
+/// One line for deletes that failed: `failures` holds the name and the
+/// reason of each, out of `total` that were asked for.
+pub fn removal_error(failures: &[(String, String)], total: usize) -> String {
+    match failures {
+        [] => String::new(),
+        [(name, reason)] if total == 1 => format!("Could not delete {name}: {reason}"),
+        _ => {
+            let details: Vec<String> = failures
+                .iter()
+                .map(|(name, reason)| format!("{name}: {reason}"))
+                .collect();
+            format!(
+                "Could not delete {} of {total}: {}",
+                failures.len(),
+                details.join("; ")
+            )
+        }
+    }
+}
+
+/// Last part of a remote path.
+fn file_name(path: &str) -> &str {
+    let trimmed = path.trim_end_matches('/');
+    trimmed.rsplit('/').next().unwrap_or(trimmed)
+}
+
 pub enum Command {
     List(String),
     CreateDir(String),
-    Remove { path: String, is_dir: bool },
-    Rename { from: String, to: String },
+    /// Delete each item, then list the folder of the first one again.
+    Remove(Vec<Removal>),
+    Rename {
+        from: String,
+        to: String,
+    },
 }
 
 pub enum Event {
@@ -255,13 +292,25 @@ async fn run(
                 let result = sftp.create_dir(path.clone()).await;
                 finish(&sftp, emit, "Could not create the folder", result, &path).await;
             }
-            Command::Remove { path, is_dir } => {
-                let result = if is_dir {
-                    sftp.remove_dir(path.clone()).await
-                } else {
-                    sftp.remove_file(path.clone()).await
-                };
-                finish(&sftp, emit, "Could not delete", result, &path).await;
+            Command::Remove(items) => {
+                let mut failures = Vec::new();
+                for item in &items {
+                    let result = if item.is_dir {
+                        sftp.remove_dir(item.path.clone()).await
+                    } else {
+                        sftp.remove_file(item.path.clone()).await
+                    };
+                    if let Err(err) = result {
+                        failures.push((file_name(&item.path).to_string(), err.to_string()));
+                    }
+                }
+                // Some may be gone even when others failed.
+                if let Some(dir) = items.first().and_then(|item| parent(&item.path)) {
+                    list(&sftp, &dir, emit).await;
+                }
+                if !failures.is_empty() {
+                    emit(Event::Failed(removal_error(&failures, items.len())));
+                }
             }
             Command::Rename { from, to } => {
                 let result = sftp.rename(from, to.clone()).await;
