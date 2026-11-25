@@ -20,14 +20,17 @@ const PADDING: f32 = 6.0;
 const MAX_LINES_PER_FRAME: i32 = 50;
 
 /// Show the terminal in the remaining space. `interactive` is false while a
-/// prompt is open, so typing goes to the prompt instead.
+/// prompt is open, so typing goes to the prompt instead. `active` is false
+/// for a terminal shown beside the one being typed into: it lets go of the
+/// keyboard. Returns `true` when it was clicked, asking to become active.
 pub fn show(
     ui: &mut egui::Ui,
     session: &mut Session,
     theme: &Theme,
     font_size: f32,
     interactive: bool,
-) {
+    active: bool,
+) -> bool {
     let font = FontId::monospace(font_size);
     let (cell_width, cell_height) =
         ui.fonts_mut(|fonts| (fonts.glyph_width(&font, 'M'), fonts.row_height(&font)));
@@ -44,16 +47,20 @@ pub fn show(
         rows: (area.height() / cell.y).floor().clamp(1.0, 1000.0) as u16,
     });
 
+    let pressed = response.clicked() || response.drag_started();
     if interactive {
-        if response.clicked() || response.drag_started() {
+        if pressed {
             response.request_focus();
+        } else if !active && response.has_focus() {
+            // Another terminal beside it is the one being typed into now.
+            response.surrender_focus();
         }
         // Take focus when nothing else has it, so typing works right away.
-        if ui.memory(|memory| memory.focused().is_none()) {
+        if active && ui.memory(|memory| memory.focused().is_none()) {
             response.request_focus();
         }
     }
-    let focused = interactive && response.has_focus();
+    let focused = interactive && (active || pressed) && response.has_focus();
     if focused {
         // Keep Tab, arrows and Escape for the terminal instead of moving focus.
         ui.memory_mut(|memory| {
@@ -74,6 +81,7 @@ pub fn show(
     }
 
     paint(ui, session, theme, &font, area, outer, cell, focused);
+    pressed
 }
 
 fn handle_keyboard(ui: &mut egui::Ui, session: &mut Session) {

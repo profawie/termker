@@ -9,6 +9,7 @@ pub mod selection;
 pub mod session;
 pub mod settings;
 pub mod sftp;
+pub mod split;
 pub mod terminal;
 
 use eframe::egui::{self, RichText};
@@ -168,6 +169,27 @@ impl Grab {
         }
         self
     }
+
+    /// Picked up from `rect` at the place the pointer was pressed.
+    pub fn new(ui: &egui::Ui, rect: egui::Rect) -> Self {
+        let (pressed, at) = ui.input(|input| (input.pointer.press_origin(), input.time));
+        Grab {
+            offset: pressed.unwrap_or(rect.center()) - rect.min,
+            size: rect.size(),
+            at,
+        }
+    }
+
+    /// For a card drawn at `size` while dragged, whatever size the thing
+    /// had where it lies; the pointer keeps hold of it inside.
+    pub fn resized(mut self, size: egui::Vec2) -> Self {
+        self.size = size;
+        self.offset = self
+            .offset
+            .min(size - egui::vec2(12.0, 8.0))
+            .max(egui::vec2(12.0, 8.0));
+        self
+    }
 }
 
 /// Seconds a card takes to rise off the page once it is picked up.
@@ -302,12 +324,7 @@ pub fn press_area(
     if !response.drag_started() {
         return Some((response, None));
     }
-    let (pressed, at) = ui.input(|input| (input.pointer.press_origin(), input.time));
-    let grab = Grab {
-        offset: pressed.unwrap_or(rect.center()) - rect.min,
-        size: rect.size(),
-        at,
-    };
+    let grab = Grab::new(ui, rect);
     Some((response, Some(grab)))
 }
 

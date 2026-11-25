@@ -20,6 +20,7 @@ Version: 0.2.2
 | Dark, light or system appearance for the app; separate terminal color themes (default: green text on black) | Done |
 | About screen listing every library, its version and website | Done |
 | SSH terminal (password or key file) with host key verification; typing `exit` closes the tab | Done |
+| Split terminals: drag a session from the sidebar onto the left, right, top or bottom edge of a terminal to show both in one window; drag the line between them to resize, drag a terminal's bar to move it or back onto Sessions to show it on its own | Done |
 | Jump server (ProxyJump), any number of hops | Done |
 | Port forwarding: local, remote and dynamic (SOCKS5) | Done |
 | SFTP: two panes side by side, each showing this computer or a host; drag files and folders from one pane to the other to copy them, including host to host; select several files with Ctrl/Cmd or Shift and click (or the keyboard) to copy or delete them together; arrow keys, Enter, Backspace, Delete, F2 and F5 work in the active pane; rename, delete, new folder | Done |

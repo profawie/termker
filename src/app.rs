@@ -16,10 +16,34 @@ use crate::{
     store::Store,
     theme::Theme,
     ui::{
-        self, forwards::ForwardsPage, hosts::HostsPage, keychain::KeychainPage,
-        session::SessionAction, sftp::SftpPage,
+        self,
+        forwards::ForwardsPage,
+        hosts::HostsPage,
+        keychain::KeychainPage,
+        session::SessionAction,
+        sftp::SftpPage,
+        split::{self, Side, Tile},
     },
 };
+
+/// A session being dragged, from its row in the sidebar or from its bar.
+#[derive(Clone, Copy)]
+struct SessionDrag {
+    id: Uuid,
+    grab: ui::Grab,
+    /// Taken from a pane on the session page, so dropping it on the
+    /// sidebar can give it a view of its own again.
+    from_pane: bool,
+}
+
+/// Where a dragged session would land.
+#[derive(Clone, Copy, PartialEq)]
+enum DropTarget {
+    /// Beside the pane of this session, on this side of it.
+    Beside(Uuid, Side),
+    /// On its own, out of the split it is in.
+    Alone,
+}
 
 pub enum ForwardState {
     Connecting(String),
@@ -135,6 +159,14 @@ pub struct App {
     pub key_store: KeyStore,
     pub secrets: SecretStore,
     pub sessions: Vec<Session>,
+    /// How open sessions are shown: each view is one or more terminals
+    /// side by side. Every session is in exactly one view.
+    views: Vec<Tile>,
+    drag: Option<SessionDrag>,
+    /// Where each pane of the session page was drawn this frame.
+    pane_rects: Vec<(Uuid, egui::Rect)>,
+    /// Where the session rows in the sidebar were drawn this frame.
+    sessions_rect: Option<egui::Rect>,
     /// The termker logo, drawn in the sidebar and on the About page.
     pub logo: egui::TextureHandle,
 }
@@ -247,6 +279,10 @@ impl App {
             secrets: SecretStore::os(data_dir.join("secrets.json")),
             keychain_page: KeychainPage::default(),
             sessions: Vec::new(),
+            views: Vec::new(),
+            drag: None,
+            pane_rects: Vec::new(),
+            sessions_rect: None,
             logo: crate::icon::logo_texture(&cc.egui_ctx),
             store,
             data,
@@ -351,8 +387,18 @@ impl App {
         );
         self.page = Page::Session(session.id);
         match replace {
-            Some(index) => self.sessions[index] = session,
-            None => self.sessions.push(session),
+            Some(index) => {
+                // Reconnecting keeps the pane where it was.
+                let old = self.sessions[index].id;
+                for view in &mut self.views {
+                    view.replace(old, session.id);
+                }
+                self.sessions[index] = session;
+            }
+            None => {
+                self.views.push(Tile::Pane(session.id));
+                self.sessions.push(session);
+            }
         }
     }
 
@@ -444,13 +490,228 @@ impl App {
 
     fn close_session(&mut self, index: usize) {
         let closed = self.sessions.remove(index);
+        let beside = self
+            .view_of(closed.id)
+            .and_then(|view| view.panes().into_iter().find(|id| *id != closed.id));
+        self.views = split::take_out(std::mem::take(&mut self.views), closed.id);
         if self.page == Page::Session(closed.id) {
-            // Move to the neighbouring session, or back to Hosts.
-            self.page = self
-                .sessions
-                .get(index.min(self.sessions.len().saturating_sub(1)))
-                .map(|session| Page::Session(session.id))
+            // Move to a terminal shown beside it, the neighbouring session,
+            // or back to Hosts.
+            self.page = beside
+                .or_else(|| {
+                    self.sessions
+                        .get(index.min(self.sessions.len().saturating_sub(1)))
+                        .map(|session| session.id)
+                })
+                .map(Page::Session)
                 .unwrap_or(Page::Hosts);
+        }
+    }
+
+    /// The view that shows session `id`.
+    fn view_of(&self, id: Uuid) -> Option<&Tile> {
+        self.views.iter().find(|view| view.contains(id))
+    }
+
+    /// The view on screen, if a session page is shown.
+    fn shown_view(&self) -> Option<&Tile> {
+        match self.page {
+            Page::Session(id) => self.view_of(id),
+            _ => None,
+        }
+    }
+
+    /// Where the dragged session would land if let go now.
+    fn drop_target(&self, drag: &SessionDrag, pointer: egui::Pos2) -> Option<DropTarget> {
+        if let Some((id, rect)) = self
+            .pane_rects
+            .iter()
+            .find(|(_, rect)| rect.contains(pointer))
+        {
+            return Some(DropTarget::Beside(*id, Side::nearest(*rect, pointer)));
+        }
+        let over_sidebar = self
+            .sessions_rect
+            .is_some_and(|rect| rect.expand(6.0).contains(pointer));
+        let split = self.view_of(drag.id).is_some_and(Tile::is_split);
+        (drag.from_pane && over_sidebar && split).then_some(DropTarget::Alone)
+    }
+
+    /// Put the dragged session where it was dropped.
+    fn drop_session(&mut self, moved: Uuid, target: DropTarget) {
+        match target {
+            DropTarget::Beside(beside, _) if beside == moved => return,
+            DropTarget::Beside(beside, side) => {
+                let mut views = split::take_out(std::mem::take(&mut self.views), moved);
+                let placed = views
+                    .iter_mut()
+                    .any(|view| view.insert(beside, moved, side));
+                if !placed {
+                    views.push(Tile::Pane(moved));
+                }
+                self.views = views;
+            }
+            DropTarget::Alone => {
+                self.views = split::take_out(std::mem::take(&mut self.views), moved);
+                self.views.push(Tile::Pane(moved));
+            }
+        }
+        self.page = Page::Session(moved);
+    }
+
+    /// The dragged session under the pointer, the place it would land, and
+    /// letting go of it.
+    fn session_drag(&mut self, ui: &egui::Ui) {
+        let Some(drag) = self.drag else {
+            return;
+        };
+        let ctx = ui.ctx().clone();
+        let (pointer, down, escape) = ctx.input(|input| {
+            (
+                input.pointer.latest_pos(),
+                input.pointer.primary_down(),
+                input.key_pressed(egui::Key::Escape),
+            )
+        });
+        let Some(pointer) = pointer else {
+            return;
+        };
+        if escape || !self.sessions.iter().any(|session| session.id == drag.id) {
+            self.drag = None;
+            return;
+        }
+        let theme = self.theme;
+        let target = self.drop_target(&drag, pointer);
+        let (hint, ok) = match target {
+            Some(DropTarget::Beside(id, _)) if id == drag.id => ("It is already here", false),
+            Some(DropTarget::Beside(id, side)) => {
+                if let Some((_, rect)) = self.pane_rects.iter().find(|(pane, _)| *pane == id) {
+                    ui::drop_outline(ui, &theme, side.half(*rect).shrink(4.0), true);
+                }
+                (side.hint(), true)
+            }
+            Some(DropTarget::Alone) => ("Drop to show it on its own", true),
+            None if drag.from_pane => ("Drop on Sessions to show it on its own", false),
+            None => ("Drop on a terminal to show both", false),
+        };
+        if drag.from_pane
+            && let Some(rect) = self.sessions_rect
+            && self.view_of(drag.id).is_some_and(Tile::is_split)
+        {
+            ui::drop_outline(
+                ui,
+                &theme,
+                rect.expand(4.0),
+                target == Some(DropTarget::Alone),
+            );
+        }
+        if let Some(session) = self.sessions.iter().find(|session| session.id == drag.id) {
+            let name = session.name.clone();
+            let dot = session_dot(&theme, &session.state);
+            ui::drag_float(
+                &ctx,
+                &theme,
+                drag.grab,
+                egui::vec2(10.0, 6.0),
+                hint,
+                ok,
+                |ui| {
+                    ui.horizontal(|ui| {
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                        ui.painter().circle_filled(rect.center(), 4.0, dot);
+                        ui.add(egui::Label::new(RichText::new(name).strong()).truncate());
+                    });
+                },
+            );
+        }
+        if !down {
+            self.drag = None;
+            if let Some(target) = target {
+                self.drop_session(drag.id, target);
+            }
+        }
+    }
+
+    /// The session page: every terminal of the view that holds `active`,
+    /// laid out as it was split.
+    fn session_page(&mut self, ui: &mut egui::Ui, active: Uuid) {
+        let Some(view) = self.view_of(active).cloned() else {
+            self.page = Page::Hosts;
+            return;
+        };
+        let theme = self.theme;
+        let area = ui.available_rect_before_wrap();
+        ui.painter().rect_filled(area, 0.0, theme.panel);
+        let (panes, dividers) = view.arrange(area, 6.0);
+        let split = view.is_split();
+
+        // Dividers first, so a drag on one does not reach the panes.
+        for divider in &dividers {
+            let id = egui::Id::unique(("split_divider", active)).with(&divider.path);
+            let response = ui
+                .interact(divider.rect, id, egui::Sense::drag())
+                .on_hover_cursor(match divider.axis {
+                    split::Axis::SideBySide => egui::CursorIcon::ResizeHorizontal,
+                    split::Axis::Stacked => egui::CursorIcon::ResizeVertical,
+                });
+            if response.dragged()
+                && let Some(pointer) = response.interact_pointer_pos()
+                && let Some(view) = self.views.iter_mut().find(|view| view.contains(active))
+                && let Some(split) = view.split_at_mut(&divider.path)
+            {
+                split.ratio = divider.ratio_at(pointer);
+            }
+            if response.hovered() || response.dragged() {
+                ui.painter()
+                    .rect_filled(divider.rect.shrink(1.0), 2.0, theme.accent_text);
+            }
+        }
+
+        self.pane_rects = panes.clone();
+        let mut activate = None;
+        let mut close = None;
+        let mut reconnect = None;
+        for (id, rect) in panes {
+            let Some(index) = self.sessions.iter().position(|session| session.id == id) else {
+                continue;
+            };
+            let mut pane = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt(("pane", id))
+                    .max_rect(rect)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            pane.set_clip_rect(rect);
+            let output = ui::session::show(self, &mut pane, index, id == active, split);
+            if output.activate {
+                activate = Some(id);
+            }
+            if let Some(grab) = output.grab {
+                self.drag = Some(SessionDrag {
+                    id,
+                    grab: grab.resized(egui::vec2(220.0, 34.0)),
+                    from_pane: true,
+                });
+            }
+            match output.action {
+                SessionAction::None => {}
+                SessionAction::Close => close = Some(id),
+                SessionAction::Reconnect => reconnect = Some(index),
+            }
+        }
+        if let Some(id) = activate {
+            self.page = Page::Session(id);
+        }
+        if let Some(index) = reconnect {
+            let session = &self.sessions[index];
+            let (host_id, hops) = (session.host_id, session.hops.clone());
+            self.open_session(ui.ctx(), host_id, hops, Some(index));
+        }
+        if let Some(index) =
+            close.and_then(|id| self.sessions.iter().position(|session| session.id == id))
+        {
+            self.close_session(index);
         }
     }
 
@@ -471,14 +732,29 @@ impl App {
             self.nav_item(ui, page);
         }
 
+        self.sessions_rect = None;
         if !self.sessions.is_empty() {
             ui.add_space(14.0);
             ui.label(RichText::new("SESSIONS").small().color(theme.text_dim));
+            let top = ui.cursor().top();
             let mut close = None;
             for index in 0..self.sessions.len() {
                 if self.session_item(ui, index) {
                     close = Some(index);
                 }
+            }
+            let rows =
+                egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=ui.cursor().top());
+            self.sessions_rect = Some(rows);
+            // Say that sessions can be dragged until two are shown together.
+            let alone = self.shown_view().is_some_and(|view| !view.is_split());
+            if self.sessions.len() > 1 && alone && self.drag.is_none() {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("Drag a session onto the terminal to see both at once.")
+                        .small()
+                        .color(theme.text_dim),
+                );
             }
             if let Some(index) = close {
                 self.close_session(index);
@@ -506,19 +782,34 @@ impl App {
         let session = &self.sessions[index];
         let page = Page::Session(session.id);
         let selected = self.page == page;
-        let dot = match session.state {
-            SessionState::Connected => theme.accent_text,
-            SessionState::Closed(Some(_)) => theme.danger,
-            _ => theme.text_dim,
-        };
+        // Shown beside the selected one, on the same page.
+        let on_screen = !selected
+            && self
+                .shown_view()
+                .is_some_and(|view| view.contains(session.id));
+        let dot = session_dot(&theme, &session.state);
+        let id = session.id;
         let name = session.name.clone();
         let mut close = false;
         // The row is laid out by hand so that every row is exactly as wide
         // as the sidebar: the name starts at the same place and the close
         // button sits at the same right edge on every row.
         let close_width = 26.0;
-        let (row, response) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::click());
+        let (row, response) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), 30.0),
+            egui::Sense::click_and_drag(),
+        );
+        let response = response.on_hover_text(
+            "Drag onto a terminal to show both side by side, or one above the other.",
+        );
+        if response.drag_started() {
+            self.drag = Some(SessionDrag {
+                id,
+                grab: ui::Grab::new(ui, row),
+                from_pane: false,
+            });
+        }
+        let dragged = self.drag.is_some_and(|drag| drag.id == id);
         let close_rect = egui::Rect::from_min_max(
             egui::pos2(row.right() - close_width, row.top()),
             row.right_bottom(),
@@ -532,10 +823,19 @@ impl App {
         );
 
         let painter = ui.painter();
-        if selected {
+        if dragged {
+            painter.rect_stroke(
+                name_rect,
+                6.0,
+                egui::Stroke::new(1.0, theme.accent_text.gamma_multiply(0.6)),
+                egui::StrokeKind::Inside,
+            );
+        } else if selected {
             painter.rect_filled(name_rect, 6.0, theme.accent);
         } else if response.hovered() && !close_response.hovered() {
             painter.rect_filled(name_rect, 6.0, theme.border);
+        } else if on_screen {
+            painter.rect_filled(name_rect, 6.0, theme.accent.gamma_multiply(0.25));
         }
         if close_response.hovered() {
             painter.rect_filled(close_rect, 6.0, theme.border);
@@ -545,6 +845,7 @@ impl App {
             4.0,
             if selected { theme.on_accent } else { dot },
         );
+        let selected = selected && !dragged;
         let (text_color, close_color) = if selected {
             (theme.on_accent, theme.text)
         } else {
@@ -629,6 +930,9 @@ impl eframe::App for App {
         while let Some(index) = self.sessions.iter().position(Session::logged_out) {
             self.close_session(index);
         }
+        let open: Vec<Uuid> = self.sessions.iter().map(|session| session.id).collect();
+        self.views = split::sync(std::mem::take(&mut self.views), &open);
+        self.pane_rects.clear();
         for forward in &mut self.active_forwards {
             forward.poll();
         }
@@ -697,18 +1001,8 @@ impl eframe::App for App {
         }
 
         if let Page::Session(id) = self.page {
-            match self.sessions.iter().position(|session| session.id == id) {
-                Some(index) => match ui::session::show(self, ui, index) {
-                    SessionAction::None => {}
-                    SessionAction::Close => self.close_session(index),
-                    SessionAction::Reconnect => {
-                        let session = &self.sessions[index];
-                        let (host_id, hops) = (session.host_id, session.hops.clone());
-                        self.open_session(ui.ctx(), host_id, hops, Some(index));
-                    }
-                },
-                None => self.page = Page::Hosts,
-            }
+            self.session_page(ui, id);
+            self.session_drag(ui);
             return;
         }
 
@@ -743,5 +1037,15 @@ impl eframe::App for App {
                     self.keychain_page = page;
                 }
             });
+        self.session_drag(ui);
+    }
+}
+
+/// Color of the dot that shows how a session is doing.
+fn session_dot(theme: &Theme, state: &SessionState) -> Color32 {
+    match state {
+        SessionState::Connected => theme.accent_text,
+        SessionState::Closed(Some(_)) => theme.danger,
+        _ => theme.text_dim,
     }
 }
