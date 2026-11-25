@@ -17,14 +17,48 @@ pub enum SessionAction {
     Reconnect,
 }
 
-pub fn show(app: &mut App, ui: &mut egui::Ui, index: usize) -> SessionAction {
+/// What one pane of the session page did this frame.
+pub struct PaneOutput {
+    pub action: SessionAction,
+    /// Clicked: it should be the one typed into.
+    pub activate: bool,
+    /// Its bar was picked up to move it, in the frame that happened.
+    pub grab: Option<super::Grab>,
+}
+
+/// One session's pane: its bar and its terminal, in all of `ui`. `active`
+/// is the pane typed into; `split` says other panes are shown beside it,
+/// so the bar can be dragged to move it.
+pub fn show(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    index: usize,
+    active: bool,
+    split: bool,
+) -> PaneOutput {
     let theme = app.theme;
     let terminal_theme = app.terminal_theme;
     let font_size = app.data.settings.terminal_font_size;
     let session = &mut app.sessions[index];
-    let mut action = SessionAction::None;
+    let mut output = PaneOutput {
+        action: SessionAction::None,
+        activate: false,
+        grab: None,
+    };
 
-    egui::Panel::top(("session_bar", session.id))
+    // Beside other panes, the bar is a handle: drag it to move the pane.
+    let bar_id = egui::Id::unique(("session_bar_drag", session.id));
+    if split
+        && let Some((response, grab)) = super::press_area(ui, bar_id, egui::Sense::click_and_drag())
+    {
+        output.grab = grab;
+        output.activate |= response.clicked() || response.drag_started();
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
+    }
+
+    let bar = egui::Panel::top(("session_bar", session.id))
         .frame(
             egui::Frame::new()
                 .fill(theme.panel)
@@ -32,6 +66,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, index: usize) -> SessionAction {
         )
         .show(ui, |ui| {
             ui.horizontal(|ui| {
+                if split {
+                    // Pressing the text picks up the pane instead of
+                    // selecting the words.
+                    ui.style_mut().interaction.selectable_labels = false;
+                    grip(ui, &theme).on_hover_text(
+                        "Drag to move this terminal. Drop it on Sessions in the sidebar \
+                         to show it on its own again.",
+                    );
+                }
                 let (dot, status) = match &session.state {
                     SessionState::Connecting(text) => (theme.text_dim, format!("{text}...")),
                     SessionState::Connected => (theme.accent_text, "Connected".to_string()),
@@ -41,16 +84,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, index: usize) -> SessionAction {
                 let (rect, _) =
                     ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                 ui.painter().circle_filled(rect.center(), 4.0, dot);
-                ui.label(
-                    RichText::new(
-                        session
-                            .emulator
-                            .title()
-                            .unwrap_or_else(|| session.name.clone()),
-                    )
-                    .strong(),
-                );
-                if session.hops.len() > 1 {
+                let title = RichText::new(
+                    session
+                        .emulator
+                        .title()
+                        .unwrap_or_else(|| session.name.clone()),
+                )
+                .strong();
+                let title = if active {
+                    title
+                } else {
+                    title.color(theme.text_dim)
+                };
+                ui.add(egui::Label::new(title).truncate().selectable(false));
+                if session.hops.len() > 1 && !split {
                     ui.label(
                         RichText::new(format!("via {}", session.route()))
                             .small()
@@ -58,7 +105,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, index: usize) -> SessionAction {
                     );
                 }
                 ui.label(RichText::new(status).small().color(theme.text_dim));
-                if let (Some(os), true) = (&session.os, session.is_connected()) {
+                if let (Some(os), true, false) = (&session.os, session.is_connected(), split) {
                     ui.add_space(10.0);
                     super::os::summary(ui, &theme, os);
                 }
@@ -70,16 +117,28 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, index: usize) -> SessionAction {
                         "Disconnect"
                     };
                     if ui.button(close).clicked() {
-                        action = SessionAction::Close;
+                        output.action = SessionAction::Close;
                     }
                     if session.is_closed()
                         && ui.add(super::primary_button(&theme, "Reconnect")).clicked()
                     {
-                        action = SessionAction::Reconnect;
+                        output.action = SessionAction::Reconnect;
                     }
                 });
             });
         });
+    let bar_rect = bar.response.rect;
+    if split {
+        super::drag_area_drawn(ui, bar_id, bar_rect);
+        if active {
+            // A line under the bar marks the pane being typed into.
+            let line = egui::Rect::from_min_max(
+                egui::pos2(bar_rect.left(), bar_rect.bottom() - 2.0),
+                bar_rect.max,
+            );
+            ui.painter().rect_filled(line, 0.0, theme.accent_text);
+        }
+    }
 
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(terminal_theme.bg))
@@ -92,13 +151,40 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, index: usize) -> SessionAction {
                 egui::Frame::new()
                     .inner_margin(egui::Margin::same(16))
                     .show(ui, |ui| {
-                        prompt_card(ui, &theme, &mut session.prompt, &mut session.secret_input);
+                        prompt_card_with(
+                            ui,
+                            &theme,
+                            &mut session.prompt,
+                            &mut session.secret_input,
+                            active,
+                        );
                     });
             }
-            super::terminal::show(ui, session, &terminal_theme, font_size, !prompting);
+            output.activate |=
+                super::terminal::show(ui, session, &terminal_theme, font_size, !prompting, active);
         });
 
-    action
+    output
+}
+
+/// Six dots that say the bar can be picked up.
+fn grip(ui: &mut egui::Ui, theme: &Theme) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(10.0, 16.0), egui::Sense::hover());
+    let color = if response.hovered() {
+        theme.text
+    } else {
+        theme.text_dim
+    };
+    for row in 0..3 {
+        for col in 0..2 {
+            let center = egui::pos2(
+                rect.left() + 2.5 + col as f32 * 5.0,
+                rect.top() + 3.0 + row as f32 * 5.0,
+            );
+            ui.painter().circle_filled(center, 1.3, color);
+        }
+    }
+    response
 }
 
 fn notice(ui: &mut egui::Ui, theme: &Theme, text: &str) {
@@ -118,6 +204,18 @@ pub fn prompt_card(
     theme: &Theme,
     pending: &mut Option<Prompt>,
     secret_input: &mut String,
+) {
+    prompt_card_with(ui, theme, pending, secret_input, true);
+}
+
+/// [`prompt_card`], where `take_focus` says whether its password field
+/// takes the keyboard: false while another pane is being typed into.
+fn prompt_card_with(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    pending: &mut Option<Prompt>,
+    secret_input: &mut String,
+    take_focus: bool,
 ) {
     let Some(prompt) = pending.take() else {
         return;
@@ -199,7 +297,7 @@ pub fn prompt_card(
             }) => {
                 let title = format!("Password for {username}@{hop}");
                 let error = retry.then_some("That password was not accepted. Try again.");
-                match secret_form(ui, theme, &title, error, can_remember, secret_input) {
+                match secret_form(ui, theme, &title, error, can_remember, secret_input, take_focus) {
                     Some(answer) => {
                         let _ = reply.send(answer);
                     }
@@ -222,7 +320,7 @@ pub fn prompt_card(
             }) => {
                 let title = format!("Passphrase for {key_path}");
                 let error = retry.then_some("That passphrase did not unlock the key. Try again.");
-                match secret_form(ui, theme, &title, error, can_remember, secret_input) {
+                match secret_form(ui, theme, &title, error, can_remember, secret_input, take_focus) {
                     Some(answer) => {
                         let _ = reply.send(answer);
                     }
@@ -251,6 +349,7 @@ fn secret_form(
     error: Option<&str>,
     can_remember: bool,
     input: &mut String,
+    take_focus: bool,
 ) -> Option<Option<Secret>> {
     ui.label(RichText::new(title).size(16.0).strong());
     if let Some(error) = error {
@@ -261,7 +360,7 @@ fn secret_form(
             .password(true)
             .desired_width(320.0),
     );
-    if !field.has_focus() && !field.lost_focus() {
+    if take_focus && !field.has_focus() && !field.lost_focus() {
         field.request_focus();
     }
     let entered = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
