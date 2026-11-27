@@ -50,11 +50,14 @@ pub enum RowIcon {
     Delete,
     NewGroup,
     NewHost,
+    Terminal,
+    Close,
 }
 
 /// A small square button with a drawn icon: a pencil for Rename, a bin for
-/// Delete, a folder with a plus for a new group and a screen with a plus for
-/// a new host. The name is shown when the pointer rests on it.
+/// Delete, a folder with a plus for a new group, a screen with a plus for
+/// a new host, a prompt in a window for a terminal and a cross for Close.
+/// The name is shown when the pointer rests on it.
 pub fn icon_button(ui: &mut egui::Ui, theme: &Theme, icon: RowIcon, name: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
     let hovered = response.hovered();
@@ -125,6 +128,25 @@ pub fn icon_button(ui: &mut egui::Ui, theme: &Theme, icon: RowIcon, name: &str) 
             painter.line_segment([at(0.0, 3.5), at(0.0, 6.5)], stroke);
             painter.line_segment([at(-3.0, -1.5), at(3.0, -1.5)], stroke);
             painter.line_segment([at(0.0, -4.5), at(0.0, 1.5)], stroke);
+        }
+        RowIcon::Terminal => {
+            // A window with a `>` prompt and a cursor line.
+            painter.rect_stroke(
+                egui::Rect::from_min_max(at(-8.0, -6.5), at(8.0, 6.5)),
+                2.0,
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            painter.add(egui::Shape::line(
+                vec![at(-5.0, -2.5), at(-2.0, 0.0), at(-5.0, 2.5)],
+                stroke,
+            ));
+            painter.line_segment([at(0.0, 3.0), at(4.5, 3.0)], stroke);
+        }
+        RowIcon::Close => {
+            // A cross.
+            painter.line_segment([at(-5.0, -5.0), at(5.0, 5.0)], stroke);
+            painter.line_segment([at(-5.0, 5.0), at(5.0, -5.0)], stroke);
         }
     }
     response

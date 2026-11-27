@@ -165,6 +165,8 @@ enum Choice {
 enum PaneAction {
     Show(Choice),
     Close,
+    /// Open a terminal on the pane's host in the folder shown.
+    Terminal,
     Transfer(Vec<Entry>),
 }
 
@@ -650,6 +652,12 @@ impl SftpPage {
                     self.connect(app, ui.ctx(), index, host_id);
                 }
                 Some(PaneAction::Close) => self.panes[index] = Pane::default(),
+                Some(PaneAction::Terminal) => {
+                    let pane = &self.panes[index];
+                    if let Source::Remote(remote) = &pane.source {
+                        app.connect_in(ui.ctx(), remote.host_id, &pane.path);
+                    }
+                }
                 Some(PaneAction::Transfer(entries)) => {
                     let there = names(&self.panes[1 - index].entries);
                     let taken: Vec<String> = entries
@@ -1072,7 +1080,9 @@ fn pane_ui(
         };
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if current.is_some() && ui.button("Close").clicked() {
+                if current.is_some()
+                    && super::icon_button(ui, &theme, super::RowIcon::Close, "Close").clicked()
+                {
                     action = Some(PaneAction::Close);
                 }
                 if let Source::Remote(remote) = &pane.source {
@@ -1150,7 +1160,9 @@ fn pane_ui(
             }
         }
 
-        toolbar(ui, pane);
+        if toolbar(ui, &theme, pane) {
+            action = Some(PaneAction::Terminal);
+        }
         dialog(ui, &theme, pane);
         if let Some(error) = &pane.error {
             ui.add(egui::Label::new(RichText::new(error).color(theme.danger)).wrap());
@@ -1189,7 +1201,10 @@ fn chooser(ui: &mut egui::Ui, app: &App) -> Option<Choice> {
     picked
 }
 
-fn toolbar(ui: &mut egui::Ui, pane: &mut Pane) {
+/// Up, Refresh, the path and New folder. Returns true when the terminal
+/// icon of a pane on a host was clicked.
+fn toolbar(ui: &mut egui::Ui, theme: &Theme, pane: &mut Pane) -> bool {
+    let mut terminal = false;
     ui.horizontal(|ui| {
         if ui
             .add_enabled(pane.parent().is_some(), egui::Button::new("Up"))
@@ -1206,6 +1221,17 @@ fn toolbar(ui: &mut egui::Ui, pane: &mut Pane) {
             pane.open(pane.path.clone());
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if !pane.is_local()
+                && super::icon_button(
+                    ui,
+                    theme,
+                    super::RowIcon::Terminal,
+                    "Open a terminal in this folder",
+                )
+                .clicked()
+            {
+                terminal = true;
+            }
             // No folders can be made in the list of drives.
             if ui
                 .add_enabled(!pane.path.is_empty(), egui::Button::new("New folder"))
@@ -1227,6 +1253,7 @@ fn toolbar(ui: &mut egui::Ui, pane: &mut Pane) {
         });
     });
     ui.add_space(4.0);
+    terminal
 }
 
 fn dialog(ui: &mut egui::Ui, theme: &Theme, pane: &mut Pane) {
