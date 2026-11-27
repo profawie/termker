@@ -47,6 +47,8 @@ pub struct Session {
     connected_at: Option<Instant>,
     /// The user ended the shell on the host, with `exit` or `logout`.
     logged_out: bool,
+    /// Typed into the shell as soon as it is usable.
+    queued_input: Vec<u8>,
     handle: SessionHandle,
 }
 
@@ -83,6 +85,7 @@ impl Session {
             os_is_news: false,
             connected_at: None,
             logged_out: false,
+            queued_input: Vec::new(),
             handle,
         }
     }
@@ -135,6 +138,8 @@ impl Session {
                         cols: size.cols,
                         rows: size.rows,
                     });
+                    let queued = std::mem::take(&mut self.queued_input);
+                    self.send_input(queued);
                 }
                 SessionEvent::Output(bytes) => {
                     let replies = self.emulator.feed(&bytes);
@@ -172,6 +177,15 @@ impl Session {
     pub fn send_input(&mut self, bytes: Vec<u8>) {
         if self.is_connected() && !bytes.is_empty() {
             self.handle.send(SessionCommand::Input(bytes));
+        }
+    }
+
+    /// Type `bytes` into the shell now, or once it is usable.
+    pub fn queue_input(&mut self, bytes: &[u8]) {
+        if self.is_connected() {
+            self.send_input(bytes.to_vec());
+        } else {
+            self.queued_input.extend_from_slice(bytes);
         }
     }
 

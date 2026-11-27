@@ -368,6 +368,18 @@ impl App {
         self.open_session(ctx, host_id, hops, None);
     }
 
+    /// Open a terminal session to a saved host, switch to it, and go to
+    /// `folder` there once the shell is ready.
+    pub fn connect_in(&mut self, ctx: &egui::Context, host_id: Uuid, folder: &str) {
+        let before = self.sessions.len();
+        self.connect(ctx, host_id);
+        if self.sessions.len() > before
+            && let Some(session) = self.sessions.last_mut()
+        {
+            session.queue_input(termker_core::shell::cd_command(folder).as_bytes());
+        }
+    }
+
     /// Start a session, optionally replacing the one at `replace`.
     fn open_session(
         &mut self,

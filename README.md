@@ -4,7 +4,7 @@
 
 A desktop SSH client for individuals, written entirely in Rust. Runs on Windows and macOS.
 
-Version: 0.2.2
+Version: 0.2.4
 
 | Dark | Light |
 | --- | --- |
@@ -23,7 +23,7 @@ Version: 0.2.2
 | Split terminals: drag a session from the sidebar onto the left, right, top or bottom edge of a terminal to show both in one window; drag the line between them to resize, drag a terminal's bar to move it or back onto Sessions to show it on its own | Done |
 | Jump server (ProxyJump), any number of hops | Done |
 | Port forwarding: local, remote and dynamic (SOCKS5) | Done |
-| SFTP: two panes side by side, each showing this computer or a host; drag files and folders from one pane to the other to copy them, including host to host; select several files with Ctrl/Cmd or Shift and click (or the keyboard) to copy or delete them together; arrow keys, Enter, Backspace, Delete, F2 and F5 work in the active pane; rename, delete, new folder | Done |
+| SFTP: two panes side by side, each showing this computer or a host; drag files and folders from one pane to the other to copy them, including host to host; select several files with Ctrl/Cmd or Shift and click (or the keyboard) to copy or delete them together; arrow keys, Enter, Backspace, Delete, F2 and F5 work in the active pane; rename, delete, new folder; open a terminal on the host in the folder shown | Done |
 | Keychain: generate and import keys (ED25519, ECDSA, RSA), identities, OpenSSH user certificates | Done |
 | Saved passwords and passphrases in the OS credential store (opt-in) | Done |
 | FIDO2 security keys | Planned |
